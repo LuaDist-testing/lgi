@@ -468,15 +468,36 @@ static const struct luaL_Reg module_reg[] = {
   { NULL, NULL }
 };
 
+#ifdef G_WITH_CYGWIN
+#define MODULE_NAME_FORMAT_VERSION "cyg%s-%d.dll"
+#define MODULE_NAME_FORMAT_PLAIN "cyg%s.dll"
+#elif G_OS_WIN32
+#define MODULE_NAME_FORMAT_VERSION "lib%s-%d.dll"
+#define MODULE_NAME_FORMAT_PLAIN "lib%s.dll"
+#else
+#define MODULE_NAME_FORMAT_VERSION "lib%s.so.%d"
+#define MODULE_NAME_FORMAT_PLAIN "lib%s.so"
+#endif
+
+/* Creates 'module' object which resolves symbol names to
+   lightuserdata addresses.
+   module, path = core.module(basename[, version]) */
 static int
 core_module (lua_State *L)
 {
-  /* Build module path. */
-  gchar *path = g_module_build_path (luaL_optstring (L, 2, NULL),
-				     luaL_checkstring (L, 1));
+  char *name;
+
+  /* If the version is present, combine it with basename. */
+  if (!lua_isnoneornil (L, 2))
+    name = g_strdup_printf (MODULE_NAME_FORMAT_VERSION,
+			    luaL_checkstring (L, 1),
+			    (int) luaL_checkinteger (L, 2));
+  else
+    name = g_strdup_printf (MODULE_NAME_FORMAT_PLAIN,
+			    luaL_checkstring (L, 1));
 
   /* Try to load the module. */
-  GModule *module = g_module_open (path, 0);
+  GModule *module = g_module_open (name, 0);
   if (module == NULL)
     {
       lua_pushnil (L);
@@ -489,7 +510,8 @@ core_module (lua_State *L)
   lua_setmetatable (L, -2);
 
  end:
-  lua_pushstring (L, path);
+  lua_pushstring (L, name);
+  g_free (name);
   return 2;
 }
 
@@ -525,9 +547,18 @@ set_resident (lua_State *L)
     {
       /* Remove the very last item in they array part, which is handle
 	 to our loaded module used by _CLIBS.gctm to clean modules
-	 upon state cleanup. */
-      lua_pushnil (L);
-      lua_rawseti (L, -2, lua_objlen (L, -2));
+	 upon state cleanup. But before removing it, check, that it is
+	 really the handle of our module.  Our module filename is
+	 passed as arg 2. */
+      lua_pushvalue (L, 2);
+      lua_gettable (L, -2);
+      lua_rawgeti (L, -2, lua_objlen (L, -2));
+      if (lua_equal (L, -1, -2))
+	{
+	  lua_pushnil (L);
+	  lua_rawseti (L, -4, lua_objlen (L, -4));
+	}
+      lua_pop (L, 3);
       return;
     }
   else
@@ -563,8 +594,6 @@ set_resident (lua_State *L)
 	  lua_pop (L, 1);
 	}
     }
-
-  g_warning ("failed to self-resident corelgilua5, not found in registry");
 }
 
 int
