@@ -94,9 +94,9 @@ function CallInfo.new(callable_info, to_lua)
 		       gtype, ti, callable_info.return_transfer) }
       mark_array_length(ret, ti)
       if phantom_return and ti.tag == 'gboolean' then
-	 self.ret = ret
-      else
 	 self.phantom = ret
+      else
+	 self.ret = ret
       end
    end
    return self
@@ -105,7 +105,7 @@ end
 -- Marshal single call_info cell (either input or output).
 local function marshal_cell(
       call_info, cell, direction, args, argc,
-      marshalling_params, value, params)
+      marshalling_params, value, params, retval)
    local marshaller = cell[direction]
    if not marshaller or cell.internal then return argc end
    argc = argc + 1
@@ -119,10 +119,10 @@ local function marshal_cell(
       end
    end
    if direction == 'to_lua' then
-      -- Marshal from C to Lua
+      -- Marshal from GValue to Lua
       args[argc] = marshaller(value, marshalling_params)
    else
-      -- Marshal from Lua to C
+      -- Marshal from Lua to GValue
       marshaller(value, marshalling_params, args[argc])
 
       -- Marshal array length output, if applicable.
@@ -174,7 +174,7 @@ function CallInfo:get_closure_marshaller(target)
       for i = 1, #self do
 	 argc = marshal_cell(
 	    self, self[i], 'to_value', args, argc,
-	    marshalling_params, params[i], params)
+	    marshalling_params, params[i], params, retval)
       end
    end
 end

@@ -78,19 +78,13 @@ int lgi_gi_info_new (lua_State *L, GIBaseInfo *info);
    NULL if table does not contain such field. */
 gpointer lgi_gi_load_function(lua_State *L, int typetable, const char *name);
 
-/* lightuserdata key to call mutex guard object. This mutex is locked
-   when inside Lua state and unlocked when calling out.  Protects
-   lua_State from being accessed from multiple threads when external
-   code uses multithreading.*/
-extern int lgi_call_mutex;
+/* Retrieve synchronization state, which can be used for entering and
+   leaving the state using lgi_state_enter() and lgi_state_leave(). */
+gpointer lgi_state_get_lock (lua_State *L);
 
-/* Tools for invoking Lua services from C core.  This is used mainly
-   for log handlers and toggle_notifications, which are called by GLib
-   and expected to be handled using Lua state.  But access to Lua
-   state have to be synchronized, so following API exists. */
-gpointer lgi_callback_context (lua_State *L);
-lua_State *lgi_callback_enter (gpointer user_data);
-void lgi_callback_leave (gpointer user_data);
+/* Enters/leaves Lua state. */
+void lgi_state_enter (gpointer left_state);
+void lgi_state_leave (gpointer state_lock);
 
 /* Marshalls single value from Lua to GLib/C. Returns number of temporary
    entries pushed to Lua stack, which should be popped before function call
@@ -168,7 +162,11 @@ gpointer
 lgi_object_2c (lua_State *L, int narg, GType gtype, gboolean optional,
 	       gboolean nothrow);
 
+#if !GLIB_CHECK_VERSION(2, 30, 0)
 /* Workaround for broken g_struct_info_get_size() for GValue, see
    https://bugzilla.gnome.org/show_bug.cgi?id=657040 */
 gsize lgi_struct_info_get_size (GIStructInfo *info);
 #define g_struct_info_get_size lgi_struct_info_get_size
+int lgi_field_info_get_offset (GIFieldInfo *info);
+#define g_field_info_get_offset lgi_field_info_get_offset
+#endif

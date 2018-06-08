@@ -1,7 +1,7 @@
 -- This file was automatically generated for the LuaDist project.
 
-package = 'LGI'
-version = '0.2-1'
+package = 'lgi'
+version = '0.3-1'
 
 description = {
    summary = "Lua bindings to GObject libraries",
@@ -11,32 +11,32 @@ description = {
 	 directly from Lua.
    ]],
    license = 'MIT/X11',
-   homepage = 'https://gitorious.org/lgi/lgi'
+   homepage = 'http://github.com/pavouk/lgi'
 }
 
-supported_platforms = { "unix" }
+supported_platforms = { 'unix' }
 
 -- LuaDist source
 source = {
-  tag = "0.2-1",
+  tag = "0.3-1",
   url = "git://github.com/LuaDist-testing/lgi.git"
 }
 -- Original source
 -- source = {
---    url = 'git://gitorious.org/lgi/lgi.git',
---    tag = '0.2'
+--    url = 'git://github.com/pavouk/lgi.git',
+--    tag = '0.3'
 -- }
 
-dependencies = {
-   "lua 5.1"
-}
+dependencies = { 'lua 5.1' }
 
 build = {
-   type = 'command',
-   build_command = 
-      "LUA_CFLAGS=-I$(LUA_INCDIR) python waf configure " ..
-      "--prefix=$(PREFIX) --datadir=$(LUADIR) --libdir=$(LIBDIR); " ..
-      "python waf build",
-   install_command = "python waf install",
+   type = 'make',
+   variables = {
+      PREFIX = '$(PREFIX)',
+      LUA_LIBDIR = '$(LIBDIR)',
+      LUA_SHAREDIR = '$(LUADIR)',
+      LUA_CFLAGS = '$(CFLAGS) -I$(LUA_INCDIR)',
+      LIBFLAG = '$(LIBFLAG)',
+   },
    copy_directories = { 'docs', 'samples' }
 }

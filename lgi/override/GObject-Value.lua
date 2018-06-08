@@ -8,7 +8,8 @@
 --
 ------------------------------------------------------------------------------
 
-local assert, pairs = assert, pairs
+local assert, pairs, select, type, tostring, error =
+   assert, pairs, select, type, tostring, error
 local lgi = require 'lgi'
 local core = require 'lgi.core'
 local repo = core.repo
@@ -113,23 +114,34 @@ function Value._method.find_marshaller(gtype, typeinfo, transfer)
 
    -- Special case for non-gtype records.
    if not gtype and typeinfo and typeinfo.tag == 'interface' then
-      return function(value, params, ...)
-		-- Find out proper getter/setter method for the value.
-		local get, set
-		local gtype = core.record.field(value, value_field_gtype)
-		if Type.is_a(gtype, Type.BOXED) then
-		   get, set = Value.get_boxed, Value.set_boxed
-		else
-		   get, set = Value.get_pointer, Value.set_pointer
-		end
-		-- Do GValue<->record transfer.
-		local record_info = typeinfo.interface
-		if select('#', ...) > 0 then
-		   set(value, core.record.query((...), 'addr', record_info))
-		else
-		   return core.record.new(record_info, get(value))
-		end
-	     end
+      -- Workaround for GoI < 1.30; it does not know that GLib structs are
+      -- boxed, so it does not assign them GType; moreover it incorrectly
+      -- considers GParamSpec as GType-less struct instead of the class.
+      local function marshal_record_no_gtype(value, params, ...)
+	 -- Check actual gtype of the real value.
+	 local gtype = core.record.field(value, value_field_gtype)
+
+	 if Type.is_a(gtype, Type.PARAM) then
+	    return value_marshallers[Type.PARAM](value, ...)
+	 end
+
+	 -- Find out proper getter/setter method for the value.
+	 local get, set
+	 if Type.is_a(gtype, Type.BOXED) then
+	    get, set = Value.get_boxed, Value.set_boxed
+	 else
+	    get, set = Value.get_pointer, Value.set_pointer
+	 end
+
+	 -- Do GValue<->record transfer.
+	 local record_info = typeinfo.interface
+	 if select('#', ...) > 0 then
+	    set(value, core.record.query((...), 'addr', record_info))
+	 else
+	    return core.record.new(record_info, get(value))
+	 end
+      end
+      return marshal_record_no_gtype
    end
 
    local gt = gtype

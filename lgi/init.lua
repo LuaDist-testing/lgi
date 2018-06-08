@@ -25,7 +25,7 @@ assert(gi.require ('GLib', '2.0'))
 assert(gi.require ('GObject', '2.0'))
 
 -- Create lgi table, containing the module.
-local lgi = {}
+local lgi = { _NAME = 'lgi', _VERSION = require 'lgi.version' }
 
 -- Add simple flag-checking function, avoid compatibility hassle with
 -- importing bitlib just because of this simple operation.
@@ -45,52 +45,33 @@ end
 
 -- Prepare logging support.  'log' is module-exported table, containing all
 -- functionality related to logging wrapped around GLib g_log facility.
-local logtable = { ERROR = 'assert', DEBUG = 'silent' }
-lgi.log = logtable
-core.set('logger',
-	 function(domain, level, message)
-	    -- Create domain table in the log table if it does not
-	    -- exist yet.
-	    if not logtable[domain] then logtable[domain] = {} end
-
-	    -- Check whether message should generate assert (i.e. Lua
-	    -- exception).
-	    local setting = logtable[domain][level] or logtable[level]
-	    if setting == 'assert' then error() end
-	    if setting == 'silent' then return true end
-
-	    -- Get handler for the domain and invoke it.
-	    local handler = logtable[domain].handler or logtable.handler
-	    return handler and handler(domain, level, message)
-	 end)
-
--- Main logging facility.
-function logtable.log(domain, level, format, ...)
-   local ok, msg = pcall(string.format, format, ...)
-   if not ok then msg = ("BAD FMT: `%s', `%s'"):format(format, msg) end
-   core.log(domain, level, msg)
-end
+lgi.log = {}
 
 -- Creates table containing methods 'message', 'warning', 'critical', 'error',
 -- 'debug' methods which log to specified domain.
-function logtable.domain(name)
-   local domain = logtable[name] or {}
+function lgi.log.domain(name)
+   local domain = lgi.log[name] or {}
    for _, level in ipairs { 'message', 'warning', 'critical',
 			    'error', 'debug' } do
       if not domain[level] then
-	 domain[level] = function(format, ...)
-			    logtable.log(name, level:upper(), format, ...)
-			 end
+	 domain[level] =
+	    function(format, ...)
+	       local ok, msg = pcall(string.format, format, ...)
+	       if not ok then
+		  msg = ("BAD FMT: `%s', `%s'"):format(format, msg)
+	       end
+	       core.log(name, level:upper(), msg)
+	    end
       end
    end
-   logtable[name] = domain
+   lgi.log[name] = domain
    return domain
 end
 
 -- For the rest of bootstrap, prepare logging to Lgi domain.
-local log = logtable.domain('Lgi')
+local log = lgi.log.domain('Lgi')
 
-log.message('Lua to GObject-Introspection binding v0.2')
+log.message('Lua to GObject-Introspection binding ' .. lgi._VERSION)
 
 -- Repository, table with all loaded namespaces.  Its metatable takes care of
 -- loading on-demand.  Created by C-side bootstrap.
@@ -742,7 +723,7 @@ function namespace_mt:__index(symbol)
       local package = preconditions[symbol]
       if not preconditions[package] then
 	 preconditions[package] = true
-	 require('lgix.' .. package)
+	 require('lgi.override.' .. package)
 	 preconditions[package] = nil
       end
       preconditions[symbol] = nil
@@ -798,7 +779,8 @@ end
 -- Makes sure that the namespace (optionally with requested version)
 -- is properly loaded.
 function lgi.require(name, version)
-   -- Load the namespace info for GIRepository.
+   -- Load the namespace info for GIRepository.  This also verifies
+   -- whether requested version can be loaded.
    local ns_info = assert(gi.require(name, version))
 
    -- If the repository table does not exist yet, create it.
@@ -815,18 +797,18 @@ function lgi.require(name, version)
       end
 
       -- Try to load override, if it is present.
-      local lgix_name = 'lgix.' .. ns._name
-      local ok, msg = pcall(require, lgix_name)
+      local override_name = 'lgi.override.' .. ns._name
+      local ok, msg = pcall(require, override_name)
       if not ok then
 	 -- Try parsing message; if it is something different than
-	 -- "module xxx not found", then rethrow the exception.
-	 assert(msg:find("module '" .. lgix_name .. "' not found:", 1, true),
-		msg)
+	 -- "module xxx not found", then attempt to load again and let
+	 -- the exception fly out.
+	 if not msg:find("module '" .. override_name .. "' not found:",
+			 1, true) then
+	    package.loaded[override_name] = nil
+	    require(override_name)
+	 end
       end
-   else
-      assert(not version or ns._version == version,
-	     ("loading '%s-%s', but version '%s' is already loaded"):format(
-	  ns._name, version, ns._version))
    end
    return ns
 end

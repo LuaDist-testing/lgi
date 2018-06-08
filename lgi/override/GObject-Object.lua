@@ -8,7 +8,7 @@
 --
 ------------------------------------------------------------------------------
 
-local pairs = pairs
+local pairs, select, setmetatable, error = pairs, select, setmetatable, error
 
 local core = require 'lgi.core'
 local gi = core.gi
@@ -106,12 +106,6 @@ function Object:_element(object, name)
 				  Object._class)
    local property = Object._class.find_property(class, name:gsub('_', '%-'))
    if property then return property, '_paramspec' end
-
-   -- If nothing else is found, return simple artificial attribute
-   -- which reads/writes object's env table.
-   local env = core.object.query(object, 'env')
-   return { get = function(obj) return env.name end,
-	    set = function(obj, val) env.name = val end, }, '_attribute'
 end
 
 -- Sets/gets property using specified marshaller attributes.
@@ -194,7 +188,7 @@ function Object:_access_signal(object, info, ...)
       -- If signal supports details, add metatable implementing
       -- __newindex for connecting in the 'on_signal['detail'] =
       -- handler' form.
-      if info.is_signal and info.flags.detailed then
+      if not info.is_signal or info.flags.detailed then
 	 local mt = {}
 	 function mt:__newindex(detail, target)
 	    connect_signal(object, gtype, info.name, Closure(target, info),
@@ -213,7 +207,17 @@ end
 -- attribute.
 if not gi.GObject.Object.signals.notify then
    local notify_info = gi.GObject.ObjectClass.fields.notify.typeinfo.interface
-   function Object._attribute:on_notify(object, ...)
-      return Object._access_signal(self, object, notify_info, ...)
+   function Object._attribute.on_notify(object, ...)
+      local repotable = core.object.query(object, 'repo')
+      return Object._access_signal(repotable, object, notify_info, ...)
+   end
+end
+
+-- Bind property implementation.  For some strange reason, GoI<1.30
+-- exports it only on GInitiallyUnowned and not on GObject.  Oh
+-- well...
+for _, name in pairs { 'bind_property', 'bind_property_full' } do
+   if not Object[name] then
+      Object._method[name] = InitiallyUnowned[name]
    end
 end

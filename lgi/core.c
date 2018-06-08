@@ -83,7 +83,6 @@ lgi_cache_create (lua_State *L, gpointer key, const char *mode)
   lua_rawset (L, LUA_REGISTRYINDEX);
 }
 
-static int core_addr_logger;
 static int core_addr_getgtype;
 
 static int
@@ -91,9 +90,7 @@ core_set(lua_State *L)
 {
   const char *name = luaL_checkstring (L, 1);
   int *key;
-  if (strcmp (name, "logger") == 0)
-    key = &core_addr_logger;
-  else if (strcmp (name, "getgtype") == 0)
+  if (strcmp (name, "getgtype") == 0)
     key = &core_addr_getgtype;
   else
     return luaL_argerror (L, 1, "invalid key");
@@ -251,16 +248,6 @@ lgi_guard_create (lua_State *L, GDestroyNotify destroy)
   return &guard->data;
 }
 
-/* Creates Lua string from lightuserdata (containing pointer to
-   buffer) and length. */
-static int
-core_refptr (lua_State *L)
-{
-  luaL_checktype (L, 1, LUA_TLIGHTUSERDATA);
-  lua_pushlstring (L, lua_touserdata (L, 1), luaL_checkint (L, 2));
-  return 1;
-}
-
 /* Converts GType to number. */
 static int
 core_gtype (lua_State *L)
@@ -283,22 +270,25 @@ core_constant (lua_State *L)
   return 1;
 }
 
-/* Helper structure, contents of lgi_call_mutex ud registry index.
-   Contains pointer to mutex as the 1st member, and then auxiliary
-   information so that logger can find the context. */
-typedef struct _CallMutex
+typedef struct _LgiStateMutex
 {
-  GStaticRecMutex mutex;
-  lua_State *L;
-} CallMutex;
+  /* Pointer to either local state lock (next member of this
+     structure) or to global package lock. */
+  GStaticRecMutex *mutex;
+  GStaticRecMutex state_mutex;
+} LgiStateMutex;
 
-/* GC method for CallMutex structure, which lives inside lua_State. */
+/* Global package lock (the one used for
+   gdk_threads_enter/clutter_threads_enter) */
+static GStaticRecMutex package_mutex = G_STATIC_REC_MUTEX_INIT;
+
+/* GC method for GStaticRecMutex structure, which lives inside lua_State. */
 static int
 call_mutex_gc (lua_State* L)
 {
-  CallMutex *mutex = lua_touserdata (L, 1);
-  g_static_rec_mutex_unlock (&mutex->mutex);
-  g_static_rec_mutex_free (&mutex->mutex);
+  LgiStateMutex *mutex = lua_touserdata (L, 1);
+  g_static_rec_mutex_unlock (mutex->mutex);
+  g_static_rec_mutex_free (&mutex->state_mutex);
   return 0;
 }
 
@@ -307,34 +297,46 @@ static int call_mutex_mt;
 
 /* lightuserdata of address of this member is key to LUA_REGISTRYINDEX
    where CallMutex instance for this state resides. */
-int lgi_call_mutex;
+static int call_mutex;
 
 gpointer
-lgi_callback_context (lua_State *L)
+lgi_state_get_lock (lua_State *L)
 {
-  /* Get context from the callback thread. */
-  gpointer user_data;
-  lua_pushlightuserdata (L, &lgi_call_mutex);
-  lua_rawget (L, LUA_REGISTRYINDEX);
-  user_data = lua_touserdata (L, -1);
+  gpointer state_lock;
+  lua_pushlightuserdata (L, &call_mutex);
+  lua_gettable (L, LUA_REGISTRYINDEX);
+  state_lock = lua_touserdata (L, -1);
   lua_pop (L, 1);
-  return user_data;
+  return state_lock;
 }
 
-lua_State *
-lgi_callback_enter (gpointer user_data)
+void
+lgi_state_enter (gpointer state_lock)
 {
-  /* user_data is actually a pointer to CallMutex structure. */
-  CallMutex *mutex = user_data;
-  g_static_rec_mutex_lock (&mutex->mutex);
-  return mutex->L;
+  LgiStateMutex *mutex = state_lock;
+  GStaticRecMutex *wait_on;
+
+  /* There is a complication with lock switching.  During the wait for
+     the lock, someone could call core.registerlock() and thus change
+     the lock protecting the state.  Accomodate for this situation. */
+  for (;;)
+    {
+      wait_on = g_atomic_pointer_get (&mutex->mutex);
+      g_static_rec_mutex_lock (wait_on);
+      if (wait_on == mutex->mutex)
+	break;
+
+      /* The lock is changed, unlock this one and wait again. */
+      g_static_rec_mutex_unlock (wait_on);
+    }
 }
 
-void lgi_callback_leave (gpointer user_data)
+void
+lgi_state_leave (gpointer state_lock)
 {
-  CallMutex *mutex = user_data;
-  g_assert (lua_gettop (mutex->L) == 0);
-  g_static_rec_mutex_unlock (&mutex->mutex);
+  /* Get pointer to the call mutex belonging to this state. */
+  LgiStateMutex *mutex = state_lock;
+  g_static_rec_mutex_unlock (mutex->mutex);
 }
 
 static const char* log_levels[] = {
@@ -351,105 +353,90 @@ core_log (lua_State *L)
   return 0;
 }
 
-static void
-log_handler (const gchar *log_domain, GLogLevelFlags log_level,
-	     const gchar *message, gpointer user_data)
-{
-  lua_State *L;
-  const gchar **level;
-  gboolean handled = FALSE, throw = FALSE;
-  gint level_bit;
-
-  /* Convert log_level to string. */
-  level = log_levels;
-  for (level_bit = G_LOG_LEVEL_ERROR; level_bit <= G_LOG_LEVEL_DEBUG;
-       level_bit <<= 1, level++)
-    if (log_level & level_bit)
-      break;
-
-  /* Enter Lua state, protected by the CallMutex. */
-  L = lgi_callback_enter (user_data);
-
-  /* Check, whether there is handler registered in Lua. */
-  luaL_checkstack (L, 4, "");
-  lua_pushlightuserdata (L, &core_addr_logger);
-  lua_rawget (L, LUA_REGISTRYINDEX);
-  if (!lua_isnil (L, -1))
-    {
-      /* Push arguments and invoke custom log handler. */
-      lua_pushstring (L, log_domain);
-      lua_pushstring (L, *level);
-      lua_pushstring (L, message);
-      switch (lua_pcall (L, 3, 1, 0))
-	{
-	case 0:
-	  /* If function returns non-nil, do not report on our own. */
-	  handled = lua_toboolean (L, -1);
-	  break;
-
-	case LUA_ERRRUN:
-	  /* Force throwing an exception. */
-	  throw = TRUE;
-	  break;
-
-	default:
-	  break;
-	}
-    }
-
-  /* Stack cleanup; either nil, boolean or err is popped. */
-  lua_pop (L, 1);
-
-  /* In case that the level was fatal, throw a lua error. */
-  if (throw || log_level & (G_LOG_FLAG_FATAL | G_LOG_LEVEL_ERROR))
-    luaL_error (L, "%s-%s **: %s", log_domain, *level, message);
-
-  /* Leaving the handler, so leave also call mutex. */
-  lgi_callback_leave (user_data);
-
-  /* If not handled by our handler, use default system logger. */
-  if (!handled)
-    g_log_default_handler (log_domain, log_level, message, NULL);
-}
-
 static int
 core_yield (lua_State *L)
 {
-  /* Get CallMutex from the state. */
-  CallMutex *mutex;
-  lua_pushlightuserdata (L, &lgi_call_mutex);
-  lua_rawget (L, LUA_REGISTRYINDEX);
-  mutex = lua_touserdata (L, -1);
-
   /* Perform yield with unlocked mutex; this might force another
      threads waiting on the mutex to perform what they need to do
      (i.e. enter Lua with callbacks). */
-  g_static_rec_mutex_unlock (&mutex->mutex);
+  gpointer state_lock = lgi_state_get_lock (L);
+  lgi_state_leave (state_lock);
   g_thread_yield ();
-  g_static_rec_mutex_lock (&mutex->mutex);
+  lgi_state_enter (state_lock);
+  return 0;
+}
+
+static void
+package_lock_enter (void)
+{
+  g_static_rec_mutex_lock (&package_mutex);
+}
+
+static void
+package_lock_leave (void)
+{
+  g_static_rec_mutex_unlock (&package_mutex);
+}
+
+static int
+core_registerlock (lua_State *L)
+{
+  const gchar *name;
+  void (*set_lock_functions)(GCallback, GCallback);
+  GError *err = NULL;
+  LgiStateMutex *mutex;
+  GStaticRecMutex *wait_on;
+
+  /* Get registration function. */
+  GITypelib *typelib = g_irepository_require (NULL, luaL_checkstring (L, 1),
+					      NULL, 0, &err);
+  if (!typelib)
+  {
+    lua_pushstring (L, err->message);
+    g_error_free (err);
+    return lua_error (L);
+  }
+
+  name = luaL_checkstring (L, 2);
+  if (!g_typelib_symbol (typelib, name, (gpointer*) &set_lock_functions))
+    return luaL_error (L, "`%s' not found", name);
+
+  /* Register our package lock functions. */
+  set_lock_functions (package_lock_enter, package_lock_leave);
+
+  /* Switch our statelock to actually use packagelock. */
+  lua_pushlightuserdata (L, &call_mutex);
+  lua_rawget (L, LUA_REGISTRYINDEX);
+  mutex = lua_touserdata (L, -1);
+  wait_on = g_atomic_pointer_get (&mutex->mutex);
+  if (wait_on != &package_mutex)
+    {
+      g_static_rec_mutex_lock (&package_mutex);
+      g_atomic_pointer_set (&mutex->mutex, &package_mutex);
+      g_static_rec_mutex_unlock (wait_on);
+    }
   return 0;
 }
 
 static const struct luaL_reg lgi_reg[] = {
   { "set", core_set },
   { "log",  core_log },
-  { "refptr", core_refptr },
   { "gtype", core_gtype },
   { "constant", core_constant },
   { "yield", core_yield },
+  { "registerlock", core_registerlock },
   { NULL, NULL }
 };
 
 int lgi_addr_repo;
 
 int
-luaopen_lgi_core (lua_State* L)
+luaopen_lgi_corelgilua51 (lua_State* L)
 {
-  CallMutex *mutex;
+  LgiStateMutex *mutex;
 
   /* Early GLib initializations. Make sure that following fundamental
      G_TYPEs are already initialized. */
-  setlocale (LC_ALL, "");
   g_type_init ();
   volatile GType unused;
   unused = G_TYPE_DATE;
@@ -473,15 +460,13 @@ luaopen_lgi_core (lua_State* L)
   lua_rawset (L, LUA_REGISTRYINDEX);
 
   /* Create call mutex guard, keep it locked initially (it is unlocked
-     only when we are calling out to C code) and store it into the
-     registry. Also create an auxiliary Lua thread which will be
-     exclusively used only for callbacks. */
-  lua_pushlightuserdata (L, &lgi_call_mutex);
+     only when we are calling out to GObject-C code) and store it into
+     the registry. */
+  lua_pushlightuserdata (L, &call_mutex);
   mutex = lua_newuserdata (L, sizeof (*mutex));
-  g_static_rec_mutex_init (&mutex->mutex);
-  g_static_rec_mutex_lock (&mutex->mutex);
-  mutex->L = lua_newthread (L);
-  luaL_ref (L, LUA_REGISTRYINDEX); /* Keep thread fixed in registry forever. */
+  mutex->mutex = &mutex->state_mutex;
+  g_static_rec_mutex_init (&mutex->state_mutex);
+  g_static_rec_mutex_lock (&mutex->state_mutex);
   lua_rawset (L, LUA_REGISTRYINDEX);
 
   /* Register 'lgi.core' interface. */
@@ -494,9 +479,6 @@ luaopen_lgi_core (lua_State* L)
   lua_pushvalue (L, -2);
   lua_rawset (L, LUA_REGISTRYINDEX);
   lua_setfield (L, -2, "repo");
-
-  /* Install custom log handler. */
-  g_log_set_default_handler (log_handler, mutex);
 
   /* Initialize modules. */
   lgi_buffer_init (L);
