@@ -56,11 +56,11 @@ for _, enum in pairs {
 end
 
 local pango_layout_set_text = Pango.Layout.set_text
-function Pango.Layout._method:set_text(text, len)
+function Pango.Layout:set_text(text, len)
    pango_layout_set_text(self, text, len or -1)
 end
 local pango_layout_set_markup = Pango.Layout.set_markup
-function Pango.Layout._method:set_markup(text, len)
+function Pango.Layout:set_markup(text, len)
    pango_layout_set_markup(self, text, len or -1)
 end
 
@@ -68,8 +68,8 @@ end
 -- annotation on its attrs argument.  Workaround for
 -- https://github.com/pavouk/lgi/issues/60
 if gi.Pango.Layout.methods.set_attributes.args[1].transfer ~= 'none' then
-   local _ = Pango.Layout._method.set_attributes
-   Pango.Layout._method.set_attributes = core.callable.new {
+   local _ = Pango.Layout.set_attributes
+   Pango.Layout.set_attributes = core.callable.new {
       addr = core.gi.Pango.resolve.pango_layout_set_attributes,
       name = 'Pango.Layout.set_attributes',
       ret = ti.void,
@@ -138,14 +138,14 @@ for name, def in pairs {
    def.addr = core.gi.Pango.resolve['pango_attr_' .. name]
    def.name = 'Pango.Attribute.' .. name
    def.ret = { Pango.Attribute, xfer = true }
-   Pango.Attribute._method[name] = core.callable.new(def)
+   Pango.Attribute[name] = core.callable.new(def)
 end
 
 -- Adding Pango.Attribute into the Pango.AttrList takes ownership of
 -- the record.  Pfft, crappy API, wrap and handle.
 for _, name in pairs { 'insert', 'insert_before', 'change' } do
    local raw_method = Pango.AttrList[name]
-   Pango.AttrList._method[name] = function(list, attr)
+   Pango.AttrList[name] = function(list, attr)
       -- Invoke original method first, then unown the attribute.
       raw_method(list, attr)
       core.record.set(attr, false)
@@ -157,7 +157,7 @@ end
 -- custom ffi definition for this method.
 if gi.Pango.Layout.methods.move_cursor_visually.args[6].direction ~= 'out' then
    local _ = Pango.Layout.move_cursor_visually
-   Pango.Layout._method.move_cursor_visually = core.callable.new {
+   Pango.Layout.move_cursor_visually = core.callable.new {
       addr = core.gi.Pango.resolve.pango_layout_move_cursor_visually,
       name = 'Pango.Layout.move_cursor_visually',
       ret = ti.void,
@@ -165,4 +165,16 @@ if gi.Pango.Layout.methods.move_cursor_visually.args[6].direction ~= 'out' then
       ti.boolean, ti.int, ti.int, ti.int,
       { ti.int, dir = 'out' }, { ti.int, dir = 'out' },
    }
+end
+
+-- Pango.GlyphString is struct with counted array inside.  Very GI
+-- unfriendly, we have to handle it using lgi internal magic.
+Pango.GlyphString._attribute = { glyphs = {} }
+function Pango.GlyphString._attribute.glyphs:get()
+   local array = core.record.field(self, Pango.GlyphString._field.glyphs)
+   local glyphs = {}
+   for i = 0, self.num_glyphs - 1 do
+      glyphs[i + 1] = core.record.fromarray(array, i)
+   end
+   return glyphs
 end

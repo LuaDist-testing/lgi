@@ -13,9 +13,15 @@
 
 /* Lua 5.2 compatibility stuff. */
 #if LUA_VERSION_NUM >= 502
+#ifndef luaL_register
 #define luaL_register(L, null, regs) luaL_setfuncs (L, regs, 0)
+#endif
+#ifndef lua_equal
 #define lua_equal(L, p1, p2) lua_compare (L, p1, p2, LUA_OPEQ)
+#endif
+#ifndef lua_objlen
 #define lua_objlen(L, p) lua_rawlen (L, p)
+#endif
 #define lua_setfenv(L, p) lua_setuservalue (L, p)
 #define lua_getfenv(L, p) lua_getuservalue (L, p)
 #endif
@@ -134,27 +140,29 @@ int lgi_marshal_access (lua_State *L, gboolean getmode,
 			int compound_arg, int element_arg, int val_arg);
 
 /* Parses given GICallableInfo, creates new userdata for it and stores
-   it to the stack. Uses cache, so already parsed callable held in the
-   cache is reused if possible. */
+   it to the stack. */
 int lgi_callable_create (lua_State *L, GICallableInfo *ci, gpointer addr);
+
+/* Parses callable from table-driven info description. */
+int lgi_callable_parse (lua_State *L, int info);
 
 /* Creates container block for allocated closures.  Returns address of
    the block, suitable as user_data parameter. */
 gpointer lgi_closure_allocate (lua_State *L, int count);
 
 /* Allocates n-th closure in the closure block for specified Lua
-   function (or callable table or userdata). Returns executable
-   address for the closure. */
+   function (or callable table or userdata). Assumes Callable to be
+   created on the stack, pops it. Returns executable address for the
+   closure. */
 gpointer lgi_closure_create (lua_State* L, gpointer user_data,
-			     GICallableInfo* ci, int target,
-			     gboolean autodestroy);
+			     int target, gboolean autodestroy);
 
 /* GDestroyNotify-compatible callback for destroying closure. */
 void lgi_closure_destroy (gpointer user_data);
 
 /* Allocates and creates new record instance. Assumes that repotype table
    is on the stack, replaces it with newly created proxy. */
-gpointer lgi_record_new (lua_State *L, int count);
+gpointer lgi_record_new (lua_State *L, int count, gboolean alloc);
 
 /* Creates Lua-side part of given record. Assumes that repotype table
    is on the stack, replaces it with newly created proxy. If parent
