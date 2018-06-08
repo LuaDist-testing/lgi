@@ -8,7 +8,8 @@
 --
 ------------------------------------------------------------------------------
 
-local pairs, select, setmetatable, error = pairs, select, setmetatable, error
+local pairs, select, setmetatable, error, type
+   = pairs, select, setmetatable, error, type
 
 local core = require 'lgi.core'
 local gi = core.gi
@@ -36,25 +37,28 @@ function Object:_new(args)
    -- Process 'args' table, separate properties from other fields.
    local params, others, safe = {}, {}, {}
    for name, arg in pairs(args or {}) do
-      local argtype = self[name]
-      if gi.isinfo(argtype) and argtype.is_property then
-	 local param = core.record.new(parameter_info)
-	 name = argtype.name
+      if type(name) == 'string' then
+	 local argtype = self[name]
+	 if gi.isinfo(argtype) and argtype.is_property then
+	    local param = core.record.new(parameter_info)
+	    name = argtype.name
 
-	 -- Store the name string in some safe Lua place ('safe'
-	 -- table), because param is GParameter, which contains only
-	 -- non-owning pointer to the string, and it could be
-	 -- Lua-GC'ed while still referenced by GParameter instance.
-	 safe[#safe + 1] = name
+	    -- Store the name string in some safe Lua place ('safe'
+	    -- table), because param is GParameter, which contains
+	    -- only non-owning pointer to the string, and it could be
+	    -- Lua-GC'ed while still referenced by GParameter
+	    -- instance.
+	    safe[#safe + 1] = name
 
-	 param.name = name
-	 local gtype = Type.from_typeinfo(argtype.typeinfo)
-	 Value.init(param.value, gtype)
-	 local marshaller = Value.find_marshaller(gtype, argtype.typeinfo)
-	 marshaller(param.value, nil, arg)
-	 params[#params + 1] = param
-      else
-	 others[name] = arg
+	    param.name = name
+	    local gtype = Type.from_typeinfo(argtype.typeinfo)
+	    Value.init(param.value, gtype)
+	    local marshaller = Value.find_marshaller(gtype, argtype.typeinfo)
+	    marshaller(param.value, nil, arg)
+	    params[#params + 1] = param
+	 else
+	    others[name] = arg
+	 end
       end
    end
 
@@ -62,7 +66,16 @@ function Object:_new(args)
    local object = object_new(self._gtype, params)
 
    -- Attach arguments previously filtered out from creation.
-   for name, func in pairs(others) do object[name] = func end
+   for name, value in pairs(others) do
+      if type(name) == 'string' then object[name] = value end
+   end
+
+   -- In case that type has _container_add() method, use it to process
+   -- array part of the args.
+   local add = self._container_add
+   if add and args then
+      for i = 1, #args do add(object, args[i]) end
+   end
    return object
 end
 
@@ -75,9 +88,12 @@ function InitiallyUnowned:_new(args)
 end
 
 -- Reading 'class' yields real instance of the object class.
-Object._attribute = { class = {} }
+Object._attribute = { class = {}, type = {} }
 function Object._attribute.class:get()
    return core.object.query(self, 'class')
+end
+function Object._attribute.type:get()
+   return core.object.query(self, 'repo')
 end
 
 -- Custom _element implementation, checks dynamically inherited
@@ -104,7 +120,7 @@ function Object:_element(object, name)
    -- property of the specified name exists.
    local class = core.record.cast(core.object.query(object, 'class'),
 				  Object._class)
-   local property = Object._class.find_property(class, name:gsub('_', '%-'))
+   local property = Object._class.find_property(class, name:gsub('_', '-'))
    if property then return property, '_paramspec' end
 end
 
@@ -112,7 +128,7 @@ end
 local function marshal_property(obj, name, flags, gtype, marshaller, ...)
    -- Check access rights of the property.
    local mode = select('#', ...) > 0 and 'WRITABLE' or 'READABLE'
-   if not core.has_bit(flags, repo.GObject.ParamFlags[mode]) then
+   if not flags[mode] then
       error(("%s: `%s' not %s"):format(core.object.query(obj, 'repo')._name,
 				       name, mode:lower()))
    end
@@ -131,7 +147,8 @@ function Object:_access_property(object, property, ...)
    local typeinfo = property.typeinfo
    local gtype = Type.from_typeinfo(typeinfo)
    local marshaller = Value.find_marshaller(gtype, typeinfo, property.transfer)
-   return marshal_property(object, property.name, property.flags,
+   return marshal_property(object, property.name,
+			   repo.GObject.ParamFlags[property.flags],
 			   gtype, marshaller, ...)
 end
 

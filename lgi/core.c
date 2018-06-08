@@ -83,24 +83,6 @@ lgi_cache_create (lua_State *L, gpointer key, const char *mode)
   lua_rawset (L, LUA_REGISTRYINDEX);
 }
 
-static int core_addr_getgtype;
-
-static int
-core_set(lua_State *L)
-{
-  const char *name = luaL_checkstring (L, 1);
-  int *key;
-  if (strcmp (name, "getgtype") == 0)
-    key = &core_addr_getgtype;
-  else
-    return luaL_argerror (L, 1, "invalid key");
-
-  lua_pushlightuserdata (L, key);
-  lua_pushvalue (L, 2);
-  lua_rawset (L, LUA_REGISTRYINDEX);
-  return 0;
-}
-
 int
 lgi_type_get_name (lua_State *L, GIBaseInfo *info)
 {
@@ -127,7 +109,7 @@ lgi_type_get_name (lua_State *L, GIBaseInfo *info)
   return n;
 }
 
-GType
+void
 lgi_type_get_repotype (lua_State *L, GType gtype, GIBaseInfo *info)
 {
   luaL_checkstack (L, 4, "");
@@ -172,18 +154,11 @@ lgi_type_get_repotype (lua_State *L, GType gtype, GIBaseInfo *info)
 	  lua_getfield (L, -1, g_base_info_get_name (info));
 	  lua_replace (L, -4);
 	  lua_pop (L, 2);
-	  if (gtype == G_TYPE_INVALID && !lua_isnil (L, -1))
-	    {
-	      lua_getfield (L, -1, "_gtype");
-	      gtype = luaL_optnumber (L, -1, G_TYPE_INVALID);
-	      lua_pop (L, 1);
-	    }
 	}
       else
 	lua_pop (L, 1);
     }
   lua_replace (L, -2);
-  return gtype;
 }
 
 GType
@@ -203,20 +178,20 @@ lgi_type_get_gtype (lua_State *L, int narg)
     case LUA_TSTRING:
       return g_type_from_name (lua_tostring (L, narg));
 
-    default:
+    case LUA_TTABLE:
       {
-	GType gtype = G_TYPE_INVALID;
-	lua_pushlightuserdata (L, &core_addr_getgtype);
-	lua_rawget (L, LUA_REGISTRYINDEX);
-	if (!lua_isnil (L, -1))
-	  {
-	    lua_pushvalue (L, narg);
-	    lua_call (L, 1, 1);
-	    gtype = lgi_type_get_gtype (L, -1);
-	  }
-	lua_pop (L, 1);
-	return gtype;
+        GType gtype;
+	lgi_makeabs (L, narg);
+	lua_pushstring (L, "_gtype");
+        lua_rawget (L, narg);
+        gtype = lgi_type_get_gtype (L, -1);
+        lua_pop (L, 1);
+        return gtype;
       }
+
+    default:
+      return luaL_error (L, "GType expected, got %s",
+                         lua_typename (L, lua_type (L, narg)));
     }
 }
 
@@ -252,7 +227,19 @@ lgi_guard_create (lua_State *L, GDestroyNotify destroy)
 static int
 core_gtype (lua_State *L)
 {
-  lua_pushinteger (L, lgi_type_get_gtype (L, 1));
+  lua_pushnumber (L, lgi_type_get_gtype (L, 1));
+  return 1;
+}
+
+/* Converts either GType or gi.info into repotype table. */
+static int
+core_repotype (lua_State *L)
+{
+  GType gtype = G_TYPE_INVALID;
+  GIBaseInfo **info = lgi_udata_test (L, 1, LGI_GI_INFO);
+  if (!info)
+    gtype = lgi_type_get_gtype (L, 1);
+  lgi_type_get_repotype (L, gtype, info ? *info : NULL);
   return 1;
 }
 
@@ -418,10 +405,10 @@ core_registerlock (lua_State *L)
   return 0;
 }
 
-static const struct luaL_reg lgi_reg[] = {
-  { "set", core_set },
+static const struct luaL_Reg lgi_reg[] = {
   { "log",  core_log },
   { "gtype", core_gtype },
+  { "repotype", core_repotype },
   { "constant", core_constant },
   { "yield", core_yield },
   { "registerlock", core_registerlock },

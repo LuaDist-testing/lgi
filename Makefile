@@ -5,14 +5,15 @@
 # License: MIT
 #
 
-VERSION = 0.3
+VERSION = 0.4
+MAKE ?= make
 
 ROCK = lgi-$(VERSION)-1.rockspec
 
 .PHONY : rock all clean install check
 
-all : rock
-	make -C lgi
+all :
+	$(MAKE) -C lgi
 
 rock : $(ROCK)
 $(ROCK) : rockspec.in Makefile
@@ -20,13 +21,13 @@ $(ROCK) : rockspec.in Makefile
 
 clean :
 	rm -f *.rockspec
-	make -C lgi clean
-	make -C tests clean
+	$(MAKE) -C lgi clean
+	$(MAKE) -C tests clean
 
 install :
-	make -C lgi install
+	$(MAKE) -C lgi install
 
-check :
-	make -C tests check
+check : all
+	$(MAKE) -C tests check
 
 export VERSION

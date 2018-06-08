@@ -296,7 +296,7 @@ marshal_2c_array (lua_State *L, GITypeInfo *ti, GIArrayType atype,
 	  /* Iterate through Lua array and fill GArray accordingly. */
 	  for (index = 0; index < objlen; index++)
 	    {
-	      lua_pushinteger (L, index + 1);
+	      lua_pushnumber (L, index + 1);
 	      lua_gettable (L, narg);
 
 	      /* Marshal element retrieved from the table into target
@@ -458,7 +458,7 @@ marshal_2c_list (lua_State *L, GITypeInfo *ti, GITypeTag list_tag,
       /* Retrieve index-th element from the source table and marshall
 	 it as pointer to arg. */
       GIArgument eval;
-      lua_pushinteger (L, index--);
+      lua_pushnumber (L, index--);
       lua_gettable (L, narg);
       to_pop = lgi_marshal_2c (L, eti, NULL, exfer, &eval, -1, 0, NULL, NULL);
 
@@ -675,7 +675,7 @@ marshal_2lua_error (lua_State *L, GITransfer xfer, GError *err)
       lua_setfield (L, -2, "domain");
       lua_pushstring (L, err->message);
       lua_setfield (L, -2, "message");
-      lua_pushinteger (L, err->code);
+      lua_pushnumber (L, err->code);
       lua_setfield (L, -2, "code");
 
       /* If the ownership is transferred, free the original error. */
@@ -760,8 +760,6 @@ lgi_marshal_2c (lua_State *L, GITypeInfo *ti, GIArgInfo *ai,
     case GI_TYPE_TAG_BOOLEAN:
       {
 	gboolean result;
-	if (!optional && lua_isnoneornil (L, narg))
-	  luaL_typerror (L, narg, lua_typename (L, LUA_TBOOLEAN));
 	result = lua_toboolean (L, narg) ? TRUE : FALSE;
 	if (parent == PARENT_FORCE_POINTER)
 	  arg->v_pointer = GINT_TO_POINTER (result);
@@ -828,6 +826,16 @@ lgi_marshal_2c (lua_State *L, GITypeInfo *ti, GIArgInfo *ai,
 	  {
 	  case GI_INFO_TYPE_ENUM:
 	  case GI_INFO_TYPE_FLAGS:
+	    /* If the argument is not numeric, convert to number
+	       first.  Use enum/flags 'constructor' to do this. */
+	    if (lua_type (L, narg) != LUA_TNUMBER)
+	      {
+		lgi_type_get_repotype (L, G_TYPE_INVALID, info);
+		lua_pushvalue (L, narg);
+		lua_call (L, 1, 1);
+		narg = -1;
+	      }
+	    
 	    /* Directly store underlying value. */
 	    marshal_2c_int (L, g_enum_info_get_storage_type (info), arg, narg,
 			    optional, FALSE);
@@ -1096,9 +1104,18 @@ lgi_marshal_2lua (lua_State *L, GITypeInfo *ti, GITransfer transfer,
 	  {
 	  case GI_INFO_TYPE_ENUM:
 	  case GI_INFO_TYPE_FLAGS:
-	    /* Directly store underlying value. */
+	    /* Prepare repotable of enum/flags on the stack. */
+	    lgi_type_get_repotype (L, G_TYPE_INVALID, info);
+
+	    /* Unmarshal the numeric value. */
 	    marshal_2lua_int (L, g_enum_info_get_storage_type (info),
 			      arg, FALSE);
+
+	    /* Get symbolic value from the table. */
+	    lua_gettable (L, -2);
+
+	    /* Remove the table from the stack. */
+	    lua_remove (L, -2);
 	    break;
 
 	  case GI_INFO_TYPE_STRUCT:
@@ -1266,7 +1283,7 @@ marshal_container_marshaller (lua_State *L)
 				     transfer);
 	    if (lua_type (L, 2) == LUA_TTABLE)
 	      {
-		lua_pushinteger (L, size);
+		lua_pushnumber (L, size);
 		lua_setfield (L, 2, "length");
 	      }
 	  }

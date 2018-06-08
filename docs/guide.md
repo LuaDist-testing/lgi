@@ -28,7 +28,7 @@ version)`:
 ### 1.1. Repository structure
 
 Importing library creates table containing all elements which are
-present in the library namespace - all classes, structs, global
+present in the library namespace - all classes, structures, global
 functions, constants etc.  All those elements are directly accessible, e.g.
 
     assert(GLib.PRIORITY_DEFAULT == 0)
@@ -36,7 +36,7 @@ functions, constants etc.  All those elements are directly accessible, e.g.
 Note that all elements in the namespace are lazy-loaded to avoid
 excessive memory overhead and initial loading time.  To force
 eager-loading, all namespaces (and container elements in them, like
-classes, structs, enums etc) contains `_resolve(deep)` method, which
+classes, structures, enums etc) contains `_resolve(deep)` method, which
 loads all contents eagerly, possibly recursively if `deep` argument is
 `true`.  So e.g.
 
@@ -61,6 +61,11 @@ mapping between GLib types and Lua types is established.
 * `gboolean` is mapped to Lua's `boolean` type, with `true` and
   `false` values
 * All numeric types are mapped to Lua's `number` type
+* Enumerations are primarily handled as strings with uppercased GType
+  nicks, optionally the direct numeric values are also accepted.
+* Bitflags are primarily handled as lists or sets of strings with
+  uppercased GType nicks, optionally the direct numeric values are
+  also accepted.
 * `gchar*` string is mapped to Lua as `string` type, UTF-8 encoded
 * C array types and `GArray` is mapped to Lua tables, using array part
   of the table.  Note that although in C the arrays are 0-based, when
@@ -203,6 +208,22 @@ construction:
        on_destroy = function() print("Destroyed") end
     }
 
+For some classes, which behave like containers of other things, lgi
+allows adding also a list of children into the array part of the
+argument table, which contains children element to be added.  A
+typical example is `Gtk.Container`, which allows adding element in the
+constructor table, allowing construction of the whole widget
+hierarchy in Lua-friendly way:
+
+    local window = Gtk.Window {
+       title = "Title",
+       on_destroy = function() print("Destroyed") end,
+       Gtk.Grid {
+          Gtk.Label { label = "Contents", expand = true },
+          Gtk.Statusbar {}
+       }
+    }
+
 ### 3.2. Calling methods
 
 Methods are functions grouped inside class (or interface)
@@ -211,7 +232,7 @@ Most usual technique to invoke method is using `:` operator,
 e.g. `window:show_all()`.  This is of course identical with
 `window.show_all(window)`, as is convention in plain Lua.
 
-Method declaration itself is also avavilable in the class and it is
+Method declaration itself is also available in the class and it is
 possible to invoke it without object notation, so previous example can
 be also rewritten as `Gtk.Window.show_all(window)`.  Note that this
 way of invoking removes dynamic lookup of the method from the object
@@ -229,7 +250,7 @@ first argument) are usually invoked using class namespace,
 e.g. `Gtk.Window.list_toplevels()`.  Very common form of static
 methods are `new` constructors, e.g. `Gtk.Window.new()`.  Note that in
 most cases, `new` constructors are provided only as convenience for C
-programmers, in LGI it might be preferrable to use `window =
+programmers, in LGI it might be preferable to use `window =
 Gtk.Window { type = Gtk.WindowType.TOPLEVEL }` instead of `window =
 Gtk.Window.new(Gtk.WindowType.TOPLEVEL)`.
 
@@ -265,7 +286,7 @@ following way:
        print("Destroyed", self)
     end
 
-Reading signal entity provides temprary table which can be used for
+Reading signal entity provides temporary table which can be used for
 connecting signal with specification of the signal detail (see GObject
 documentation on signal detail explanation).  An example of handler
 which is notified whenever window is activated or deactivated follows:
@@ -354,6 +375,34 @@ Running `dump_props(Gtk.Window())` yields following output:
     sensitive	gboolean
     ... (and so on)
 
+### 3.7. Querying the type of the object instances
+
+To query whether given Lua value is actually an instance of specified
+class or subclass, class types define `is_type_of` method.  This
+class-method takes one argument and checks, whether given argument as an
+instance of specified class (or implements specified interface, when
+called on interface instances).  Following examples demonstrate usage of
+this construct:
+
+    local window = Gtk.Window()
+    print(Gtk.Window:is_type_of(window))    -- prints 'true'
+    print(Gtk.Widget:is_type_of(window))    -- prints 'true'
+    print(Gtk.Buildable:is_type_of(window)) -- prints 'true'
+    print(Gtk.Action:is_type_of(window))    -- prints 'false'
+    print(Gtk.Window:is_type_of('string'))  -- prints 'false'
+    print(Gtk.Window:is_type_of('string'))  -- prints 'false'
+    print(Gtk.Window:is_type_of(nil))       -- prints 'false'
+
+There is also possibility to query the type-table from instantiated
+object, using `type` property.
+
+    -- Checks, whether 'unknown' conforms to the type of the 'template'
+    -- object.
+    function same_type(template, unknown)
+       local type = template.type
+       return type:is_type_of(unknown)
+    end
+
 ## 4. Structures and unions
 
 Structures and unions are supported in a very similar way to classes.
@@ -396,13 +445,24 @@ Fields are accessed using `.` operator on structure instance, for example
 
 ## 5. Enums and bitflags, constants
 
-Enum instances are represented as plain numbers in LGI.  So in any
-place where enum or bitflags instance is needed, a number can be used
-directly instead.
+LGI primarily maps enumerations to strings containing uppercased nicks
+of enumeration constant names.  Optionally, a direct enumeration value
+is also accepted.  Similarly, bitflags are primarily handled as sets
+containing uppercased flag nicks, but also lists of these nicks or
+direct numeric value is accepted.  When a numeric value cannot be
+mapped cleanly to the known set of bitflags, the remaining number is
+stored in the first array slot of the returned set.
 
-### 5.1. Accessing values
+Note that this behavior changed in lgi 0.4; up to that alpha release,
+lgi handled enums and bitmaps exclusively as numbers only.  The change
+is compatible in Lua->C direction, where numbers still can be used,
+but incompatible in C->Lua direction, where lgi used to return
+numbers, while now it returns either string with enum value or table
+with flags.
 
-In order to retrieve realenum values from symbolic names, enum and
+### 5.1. Accessing numeric values
+
+In order to retrieve real enum values from symbolic names, enum and
 bitflags are loaded into repository as tables mapping symbolic names
 to numeric constants.  Fro example, dumping `Gtk.WindowType` enum
 yields following output:
@@ -415,7 +475,8 @@ yields following output:
     };
 
 so constants can be referenced using `Gtk.WindowType.TOPLEVEL`
-construct.
+construct, or directly using string `'TOPLEVEL'` when a
+`Gtk.WindowType` is expected.
 
 ### 5.2. Backward mapping, getting names from numeric values
 
@@ -449,6 +510,40 @@ all symbolic names which make up the requested value:
       SORTED = 32;
       ODD = 2;
     };
+    
+This way, it is possible to check for presence of specified flag very
+easily:
+
+    if Gtk.RegionFlags[flags].ODD then
+       -- Code handling region-odd case
+    endif
+
+If the value cannot be cleanly decomposed to known flags, remaining
+bits are accumulated into number stored at index 1:
+
+> dump(Gtk.RegionFlags[51])
+
+    ["table: 0x242fb20"] = {  -- table: 0x242fb20
+      EVEN = 1;
+      SORTED = 32;
+      [1] = 16;
+      ODD = 2;
+    };
+
+To construct numeric value which can be passed to a function expecting
+an enum, it is possible to simply add requested flags.  However, there
+is a danger if some definition contains multiple flags , in which case
+numeric adding produces incorrect results.  Therefore, it is possible
+to use bitflags pseudoconstructor', which accepts table containing
+requested flags:
+
+> =Gtk.RegionFlags { 'FIRST', 'SORTED' }
+
+    36
+
+> =Gtk.RegionFlags { Gtk.RegionFlags.ODD, 16, 'EVEN' }
+
+    19
 
 ## 6. Threading and synchronization
 
@@ -491,7 +586,7 @@ All logging is controlled by `lgi.log` table.  To allow logging in
 LGI-enabled code, `lgi.log.domain(name)` method exists.  This method
 returns table containing methods `message`, `warning`, `critical`,
 `error` and `debug` methods, which take format string optionally
-followed by inserts and logs specifed string.  An example of typical
+followed by inserts and logs specified string.  An example of typical
 usage follows:
 
     local lgi = require 'lgi'
@@ -500,7 +595,7 @@ usage follows:
     -- This is equivalent of C 'g_message("A message %d", 1)'
     log.message("A message %d", 1)
 
-    -- This is equivalent ot C 'g_warning("Not found")'
+    -- This is equivalent to C 'g_warning("Not found")'
     log.warning("Not found")
 
 Note that format string is formatted using Lua's `string.format()`, so

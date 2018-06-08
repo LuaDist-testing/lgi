@@ -8,7 +8,11 @@ Licensed under
 [MIT-style](http://www.opensource.org/licenses/mit-license.php)
 license, see LICENSE file for full text.
 
-Home of the project is on [GitHub](http//github.com/pavouk/lgi).
+Home of the project is on [GitHub](http://github.com/pavouk/lgi).
+
+LGI is tested and compatible with standard Lua 5.1 and Lua 5.2 and
+recent LuaJIT 2 betas.  Compatibility with other Lua implementations
+is not tested yet.
 
 ## Installation:
 
@@ -27,6 +31,8 @@ Alternatively, use make-based installation:
     make
     [sudo] make install [PREFIX=<prefix>] [DESTDIR=<destdir>]
 
+Please note that on BSD-systems you may need to use 'gmake'.
+
 ## Usage
 
 See examples in samples/ directory.  Documentation is available in
@@ -35,10 +41,26 @@ markdown processor if you want to read it in HTML.
 
 ## History
 
-### 0.3
+### 0.4 (4-Jan-2012)
+
+- Changed handling of enums and bitflags, switched from marshaling
+  them as numbers to prefering strings for enums and tables (sets or
+  lists) for bitflags.  Numeric values still work for Lua->C
+  marshalling, but backward compatibility is broken in C->Lua enum and
+  bitflags marshalling.
+- Compatible with Lua 5.2 and LuaJIT
+- Added standardized way for overrides to handle constructor argument
+  table array part.
+- Existing Gtk overrides reworked and improved, there is now a way to
+  describe and create widget hierarchies in Lua-friendly way.  See
+  `docs/gtk.lua`, chapter about `Gtk.Container` for overview and
+  samples.
+- Various bugfixes and portability fixes.
+
+### 0.3 (28-Nov-2011)
 
 - Project hosting moved to GitHub.
-- Build system swicthed from `waf` to simple Makefile-based one
+- Build system switched from `waf` to simple Makefile-based one
 - Added automatic locking of thread-sensitive libraries (Gdk and
   Clutter).  There is no need to add `Gdk.threads_enter()`,
   `Gdk.threads_leave()` and `Clutter.threads_enter()`,
@@ -53,10 +75,10 @@ markdown processor if you want to read it in HTML.
   even when testsuite is not needed at all.
 - Remove `setlocale()` initialization, which could break Lua when used
   with some regional locales.  The downside of this change is that
-  marshalling filenames containing non-ASCII characters on systems
+  marshaling file names containing non-ASCII characters on systems
   which define `G_BROKEN_FILENAMES` environment variable (probably
   only Fedora 15) does not work now.
 
-### 0.2
+### 0.2 (7-Nov-2011)
 
 First public release

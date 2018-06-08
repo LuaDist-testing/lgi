@@ -1,7 +1,7 @@
 -- This file was automatically generated for the LuaDist project.
 
 package = 'lgi'
-version = '0.3-1'
+version = '0.4-1'
 
 description = {
    summary = "Lua bindings to GObject libraries",
@@ -18,16 +18,16 @@ supported_platforms = { 'unix' }
 
 -- LuaDist source
 source = {
-  tag = "0.3-1",
+  tag = "0.4-1",
   url = "git://github.com/LuaDist-testing/lgi.git"
 }
 -- Original source
 -- source = {
 --    url = 'git://github.com/pavouk/lgi.git',
---    tag = '0.3'
+--    tag = '0.4'
 -- }
 
-dependencies = { 'lua 5.1' }
+dependencies = { 'lua >= 5.1' }
 
 build = {
    type = 'make',
