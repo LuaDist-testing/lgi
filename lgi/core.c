@@ -378,31 +378,33 @@ package_lock_leave (void)
   g_static_rec_mutex_unlock (&package_mutex);
 }
 
+static gpointer package_lock_register[8] = { NULL };
+
 static int
 core_registerlock (lua_State *L)
 {
-  const gchar *name;
   void (*set_lock_functions)(GCallback, GCallback);
-  GError *err = NULL;
   LgiStateMutex *mutex;
   GStaticRecMutex *wait_on;
+  unsigned i;
 
   /* Get registration function. */
-  GITypelib *typelib = g_irepository_require (NULL, luaL_checkstring (L, 1),
-					      NULL, 0, &err);
-  if (!typelib)
-  {
-    lua_pushstring (L, err->message);
-    g_error_free (err);
-    return lua_error (L);
-  }
+  luaL_checktype (L, 1, LUA_TLIGHTUSERDATA);
+  set_lock_functions = lua_touserdata (L, 1);
+  luaL_argcheck (L, set_lock_functions != NULL, 1, "NULL function");
 
-  name = luaL_checkstring (L, 2);
-  if (!g_typelib_symbol (typelib, name, (gpointer*) &set_lock_functions))
-    return luaL_error (L, "`%s' not found", name);
-
-  /* Register our package lock functions. */
-  set_lock_functions (package_lock_enter, package_lock_leave);
+  /* Check, whether this package was already registered. */
+  for (i = 0; i < G_N_ELEMENTS (package_lock_register) &&
+	 package_lock_register[i] != set_lock_functions; i++)
+    {
+      if (package_lock_register[i] == NULL)
+	{
+	  /* Register our package lock functions. */
+	  package_lock_register[i] = set_lock_functions;
+	  set_lock_functions (package_lock_enter, package_lock_leave);
+	  break;
+	}
+    }
 
   /* Switch our statelock to actually use packagelock. */
   lua_pushlightuserdata (L, &call_mutex);
@@ -471,7 +473,7 @@ core_module (lua_State *L)
 {
   /* Build module path. */
   gchar *path = g_module_build_path (luaL_optstring (L, 2, NULL),
-                                     luaL_checkstring (L, 1));
+				     luaL_checkstring (L, 1));
 
   /* Try to load the module. */
   GModule *module = g_module_open (path, 0);
@@ -514,10 +516,70 @@ create_repo_table (lua_State *L, const char *name, void *key)
   lua_setfield (L, -2, name);
 }
 
+static void
+set_resident (lua_State *L)
+{
+  /* Get '_CLIBS' table from the registry (Lua5.2). */
+  lua_getfield (L, LUA_REGISTRYINDEX, "_CLIBS");
+  if (!lua_isnil (L, -1))
+    {
+      /* Remove the very last item in they array part, which is handle
+	 to our loaded module used by _CLIBS.gctm to clean modules
+	 upon state cleanup. */
+      lua_pushnil (L);
+      lua_rawseti (L, -2, lua_objlen (L, -2));
+      return;
+    }
+  else
+    {
+      /* This hack tries to enumerate the whole registry table and
+	 find 'LOADLIB: path' library.  When it detects itself, it
+	 just removes pointer to the loaded library, disallowing Lua
+	 to close it, thus leaving it resident even when the state is
+	 closed. */
+
+      /* Note: 'nil' is on the stack from lua_getfield() call above. */
+      while (lua_next (L, LUA_REGISTRYINDEX))
+	{
+	  if (lua_type (L, -2) == LUA_TSTRING)
+	    {
+	      const char *str = lua_tostring (L, -2);
+	      if (g_str_has_prefix (str, "LOADLIB: ") &&
+		  strstr (str, "corelgilua5"))
+		{
+		  /* NULL the pointer to the loaded library. */
+		  if (lua_type (L, -1) == LUA_TUSERDATA)
+		    {
+		      gpointer *lib = lua_touserdata (L, -1);
+		      *lib = NULL;
+		    }
+
+		  /* Clean the stack and return. */
+		  lua_pop (L, 2);
+		  return;
+		}
+	    }
+
+	  lua_pop (L, 1);
+	}
+    }
+
+  g_warning ("failed to self-resident corelgilua5, not found in registry");
+}
+
 int
 luaopen_lgi_corelgilua51 (lua_State* L)
 {
   LgiStateMutex *mutex;
+
+  /* Try to make itself resident.  This is needed because this dynamic
+     module is 'statically' linked with glib/gobject, and these
+     libraries are not designed to be unloaded.  Once they are
+     unloaded, they cannot be safely loaded again into the same
+     process.  To avoid problems when repeately opening and closing
+     lua_States and loading lgi into them, we try to make the whole
+     'core' module resident. */
+  set_resident (L);
 
   /* Early GLib initializations. Make sure that following fundamental
      G_TYPEs are already initialized. */
@@ -556,6 +618,9 @@ luaopen_lgi_corelgilua51 (lua_State* L)
   mutex->mutex = &mutex->state_mutex;
   g_static_rec_mutex_init (&mutex->state_mutex);
   g_static_rec_mutex_lock (&mutex->state_mutex);
+  lua_pushlightuserdata (L, &call_mutex_mt);
+  lua_rawget (L, LUA_REGISTRYINDEX);
+  lua_setmetatable (L, -2);
   lua_rawset (L, LUA_REGISTRYINDEX);
 
   /* Register 'lgi.core' interface. */
