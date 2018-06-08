@@ -45,10 +45,6 @@ GType lgi_type_get_gtype (lua_State *L, int narg);
    handler. Returns pointer to user_data stored inside guard. */
 gpointer *lgi_guard_create (lua_State *L, GDestroyNotify destroy);
 
-/* lightuserdata of this address is a key in LUA_REGISTRYINDEX table
-   to global repo table. */
-extern int lgi_addr_repo;
-
 /* Creates cache table (optionally with given table __mode), stores it
    into registry to specified userdata address. */
 void
@@ -174,3 +170,8 @@ gsize lgi_struct_info_get_size (GIStructInfo *info);
 int lgi_field_info_get_offset (GIFieldInfo *info);
 #define g_field_info_get_offset lgi_field_info_get_offset
 #endif
+
+/* Workaround method for broken g_object_info_get_*_function_pointer()
+   in GI 1.32.0. (see https://bugzilla.gnome.org/show_bug.cgi?id=673282) */
+gpointer lgi_object_get_function_ptr (GIObjectInfo *info,
+				      const gchar *(*getter)(GIObjectInfo *));

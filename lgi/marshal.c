@@ -38,6 +38,7 @@ static void
 marshal_2c_int (lua_State *L, GITypeTag tag, GIArgument *val, int narg,
 		gboolean optional, gboolean use_pointer)
 {
+  (void) optional;
   switch (tag)
     {
 #define HANDLE_INT(nameup, namelow, ptrconv, pct, val_min, val_max)     \
@@ -591,7 +592,8 @@ marshal_2c_hash (lua_State *L, GITypeInfo *ti, GHashTable **table, int narg,
 	  /* Marshal key and value from the table. */
 	  for (i = 0; i < 2; i++)
 	    vals += lgi_marshal_2c (L, eti[i], NULL, exfer, &eval[i],
-				    key_pos + i, 0, NULL, NULL);
+				    key_pos + i, PARENT_FORCE_POINTER,
+				    NULL, NULL);
 
 	  /* Insert newly marshalled pointers into the table. */
 	  g_hash_table_insert (*table, eval[0].v_pointer, eval[1].v_pointer);
@@ -1409,9 +1411,11 @@ marshal_fundamental (lua_State *L)
       if (GI_IS_OBJECT_INFO (info) && g_object_info_get_fundamental (info))
 	{
 	  GIObjectInfoGetValueFunction get_value =
-	    g_object_info_get_get_value_function_pointer (info);
+	    lgi_object_get_function_ptr (info,
+					 g_object_info_get_get_value_function);
 	  GIObjectInfoSetValueFunction set_value =
-	    g_object_info_get_set_value_function_pointer (info);
+	    lgi_object_get_function_ptr (info,
+					 g_object_info_get_set_value_function);
 	  if (get_value && set_value)
 	    {
 	      lua_pushlightuserdata (L, get_value);
@@ -1429,6 +1433,7 @@ marshal_fundamental (lua_State *L)
 static void
 gclosure_destroy (gpointer user_data, GClosure *closure)
 {
+  (void) closure;
   lgi_closure_destroy (user_data);
 }
 

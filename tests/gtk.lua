@@ -31,9 +31,6 @@ function gtk.buildable_id()
    checkv(w.id, nil, nil)
    w.id = 'label_id'
    checkv(w.id, 'label_id', 'string')
-   checkv(Gtk.Buildable.get_name(w), 'label_id', 'string')
-   Gtk.Buildable.set_name(w, 'new_id')
-   checkv(w.id, 'new_id', 'string')
 end
 
 function gtk.container_property()
@@ -260,22 +257,101 @@ function gtk.treestore()
    checkv(store[first][cols.int], 16, 'number')
 end
 
+function gtk.treemodel_pairs()
+   local cols = { int = 1, string = 2 }
+   local store = Gtk.TreeStore.new { GObject.Type.INT, GObject.Type.STRING }
+   local first = store:append(
+      nil, { [cols.int] = 42, [cols.string] = 'hello' })
+   local sub1 = store:append(
+      first, { [cols.int] = 100, [cols.string] = 'sub1' })
+   local sub2 = store:append(
+      first, { [cols.int] = 101, [cols.string] = 'sub2' })
+
+   local count = 0
+   for i, item in store:pairs() do
+      count = count + 1
+      check(Gtk.TreeIter:is_type_of(i))
+      check(item[cols.string] == 'hello')
+   end
+   check(count == 1)
+
+   count = 0
+   for i, item in store:pairs(first) do
+      count = count + 1
+      check(Gtk.TreeIter:is_type_of(i))
+      if (count == 1) then
+	 check(item[cols.string] == 'sub1')
+      else
+	 check(item[cols.string] == 'sub2')
+      end
+   end
+   check(count == 2)
+
+   count = 0
+   for i, item in store:pairs(sub1) do
+      count = count + 1
+   end
+   check(count == 0)
+end
+
 function gtk.treeview()
    local cols = { int = 1, string = 2 }
    local store = Gtk.TreeStore.new { GObject.Type.INT, GObject.Type.STRING }
-   local view = Gtk.TreeView {
-      model = store,
-      Gtk.TreeViewColumn {
-	 { Gtk.CellRendererText {}, { text = cols.int } },
-	 { Gtk.CellRendererText {}, expand = true, pack = 'end',
-	   function(column, cell, model, iter)
-	      return model[iter][cols.string]:toupper()
-	   end },
-      }
+   local renderer = Gtk.CellRendererText { id = 'renderer' }
+   local column = Gtk.TreeViewColumn {
+      id = 'column',
+      { renderer, { text = cols.int } },
+      { Gtk.CellRendererText {}, expand = true, pack = 'end',
+	function(column, cell, model, iter)
+	   return model[iter][cols.string]:toupper()
+	end },
    }
 
-   -- Unfortunately, there is no sane way to test the real contents of
-   -- the treeview above, namely contents of the column, except
-   -- dislaying and inspecting the tree visually, which is
-   -- inappropriate for automated test.
+   local view = Gtk.TreeView {
+      id = 'view',
+      model = store,
+      column
+   }
+   -- Check that column is accessible by its 'id' attribute.
+   check(view.child.view == view)
+   check(view.child.column == column)
+
+   -- Check that renderer is accessible by its 'id' attribute.
+   check(view.child.renderer == renderer)
+end
+
+function gtk.actiongroup_add()
+   -- Adding normal action and action with an accelerator.
+   local ag = Gtk.ActionGroup()
+   local a1, a2 = Gtk.Action { name = 'a1' }, Gtk.Action { name = 'a2' }
+   ag:add(a1)
+   check(#ag:list_actions() == 1)
+   check(ag:get_action('a1') == a1)
+   ag:add { a2, accelerator = '<control>A' }
+   check(#ag:list_actions() == 2)
+   check(ag:get_action('a2') == a2)
+
+   -- Adding a group of radio actions, this time inside the group ctor.
+   local chosen
+   a1 = Gtk.RadioAction { name = 'a1', value = 1 }
+   a2 = Gtk.RadioAction { name = 'a2', value = 2 }
+   ag = Gtk.ActionGroup {
+      { a1, { a2, accelerator = '<control>a' },
+	on_change = function(action) chosen = action end }
+   }
+   check(#ag:list_actions() == 2)
+   check(ag:get_action('a1') == a1)
+   check(ag:get_action('a2') == a2)
+   check(chosen == nil)
+   a1:activate()
+   check(chosen == a1)
+   a2:activate()
+   check(chosen == a2)
+end
+
+function gtk.actiongroup_index()
+   local a1, a2 = Gtk.Action { name = 'a1' }, Gtk.Action { name = 'a2' }
+   local ag = Gtk.ActionGroup { a1, a2 }
+   check(ag.action.a1 == a1)
+   check(ag.action.a2 == a2)
 end

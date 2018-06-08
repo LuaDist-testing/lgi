@@ -11,12 +11,42 @@
 #include <string.h>
 #include "lgi.h"
 
-/* lightuserdata keys to registry, containing table representing weak
+/* lightuserdata key to registry, containing table representing weak
    cache of known objects. */
 static int cache;
 
 /* lightuserdata key to registry for metatable of objects. */
 static int object_mt;
+
+/* lightuserdata key to registry, containing 'env' table, which maps
+   lightuserdata(obj-addr) -> obj-env-table. */
+static int env;
+
+/* Keys in 'env' table containing quark used as object's qdata for env
+   and thread which is used from qdata destroy callback. */
+enum {
+  OBJECT_QDATA_ENV = 1,
+  OBJECT_QDATA_THREAD
+};
+
+/* Structure stored in GObject's qdata at OBJECT_QDATA_ENV. */
+typedef struct _ObjectData
+{
+  gpointer object;
+  gpointer state_lock;
+  lua_State *L;
+} ObjectData;
+
+/* lightuserdata key to registry, containing metatable for object env
+   guard. */
+static int env_mt;
+
+/* Structure containing object_env_guard userdata. */
+typedef struct _ObjectEnvGuard
+{
+  gpointer object;
+  GQuark id;
+} ObjectEnvGuard;
 
 /* Checks that given narg is object type and returns pointer to type
    instance representing it. */
@@ -96,6 +126,38 @@ object_get (lua_State *L, int narg)
   return obj;
 }
 
+/* This is workaround method for broken
+   g_object_info_get_*_function_pointer() in GI 1.32.0. (see
+   https://bugzilla.gnome.org/show_bug.cgi?id=673282) */
+gpointer
+lgi_object_get_function_ptr (GIObjectInfo *info,
+			     const gchar *(*getter)(GIObjectInfo *))
+{
+  gpointer func = NULL;
+  g_base_info_ref (info);
+  while (info != NULL)
+    {
+      GIBaseInfo *parent;
+      const gchar *func_name;
+
+      /* Try to get the name and the symbol. */
+      func_name = getter (info);
+      if (func_name && g_typelib_symbol (g_base_info_get_typelib (info),
+					 func_name, &func))
+	{
+	  g_base_info_unref (info);
+	  break;
+	}
+
+      /* Iterate to the parent info. */
+      parent = g_object_info_get_parent (info);
+      g_base_info_unref (info);
+      info = parent;
+    }
+
+  return func;
+}
+
 /* Retrieves requested typetable function for the object. */
 static gpointer
 object_load_function (lua_State *L, GType gtype, const gchar *name)
@@ -128,7 +190,7 @@ object_refsink (lua_State *L, gpointer obj)
   if (info != NULL && g_object_info_get_fundamental (info))
     {
       GIObjectInfoRefFunction ref =
-	g_object_info_get_ref_function_pointer (info);
+	lgi_object_get_function_ptr (info, g_object_info_get_ref_function);
       g_base_info_unref (info);
       if (ref != NULL)
 	{
@@ -176,7 +238,7 @@ object_unref (lua_State *L, gpointer obj)
   if (info != NULL && g_object_info_get_fundamental (info))
     {
       GIObjectInfoUnrefFunction unref =
-	g_object_info_get_unref_function_pointer (info);
+	lgi_object_get_function_ptr (info, g_object_info_get_unref_function);
       g_base_info_unref (info);
       if (unref != NULL)
 	{
@@ -316,26 +378,33 @@ static const luaL_Reg object_mt_reg[] = {
 };
 
 static const char *const query_mode[] = {
-  "gtype", "repo", "class", NULL
- };
+  "addr", "gtype", "repo", "class", NULL
+};
 
 /* Queries for assorted instance properties. Lua-side prototype:
    res = object.query(objectinstance, mode [, iface-gtype])
    Supported mode strings are:
    'gtype': returns real gtype of this instance.
    'repo':  returns repotable for this instance.
-   'class': returns class struct record of this instance. */
+   'class': returns class struct record of this instance.
+   'addr':  returns lightuserdata with pointer to the object. */
 static int
 object_query (lua_State *L)
 {
   gpointer object = object_check (L, 1);
   if (object)
     {
+      GType gtype;
       int mode = luaL_checkoption (L, 2, query_mode[0], query_mode);
-      GType gtype = lgi_type_get_gtype (L, 3);
-      if (gtype == G_TYPE_INVALID)
-	gtype = G_TYPE_FROM_INSTANCE (object);
       if (mode == 0)
+        {
+          lua_pushlightuserdata (L, object);
+          return 1;
+        }
+      gtype = lgi_type_get_gtype (L, 3);
+      if (gtype == G_TYPE_INVALID)
+        gtype = G_TYPE_FROM_INSTANCE (object);
+      if (mode == 1)
 	{
 	  lua_pushnumber (L, gtype);
 	  return 1;
@@ -345,7 +414,7 @@ object_query (lua_State *L)
 	  /* Get repotype structure. */
 	  if (object_type (L, gtype) != G_TYPE_INVALID)
 	    {
-	      if (mode == 2)
+	      if (mode == 3)
 		{
 		  gpointer typestruct = !G_TYPE_IS_INTERFACE (gtype)
 		    ? G_TYPE_INSTANCE_GET_CLASS (object, gtype, GTypeClass)
@@ -376,38 +445,143 @@ object_field (lua_State *L)
   return lgi_marshal_field (L, object, getmode, 1, 2, 3);
 }
 
-/* Object creator.  Normally Lua code uses GObject.Object.new(), which
-   maps directly to g_object_newv(), but for some reason GOI < 1.0
-   does not export this method in the typelib. */
-static int
-object_new (lua_State *L)
+static void
+object_data_destroy (gpointer user_data)
 {
-  /* Get GType - 1st argument. */
-  GParameter *params;
-  size_t size, i;
-  GIBaseInfo *gparam_info;
-  GType gtype = lgi_type_get_gtype (L, 1);
-  luaL_checktype (L, 2, LUA_TTABLE);
+  ObjectData *data = user_data;
+  lua_State *L = data->L;
+  lgi_state_enter (data->state_lock);
+  luaL_checkstack (L, 4, NULL);
 
-  /* Find BaseInfo of GParameter. */
-  gparam_info = g_irepository_find_by_name (NULL, "GObject", "Parameter");
-  *lgi_guard_create (L, (GDestroyNotify) g_base_info_unref) = gparam_info;
+  /* Release 'obj' entry from 'env' table. */
+  lua_pushlightuserdata (L, &env);
+  lua_rawget (L, LUA_REGISTRYINDEX);
 
-  /* Prepare array of GParameter structures. */
-  size = lua_objlen (L, 2);
-  params = g_newa (GParameter, size);
-  for (i = 0; i < size; ++i)
+  /* Deactivate env_destroy, to avoid double destruction. */
+  lua_pushlightuserdata (L, data->object);
+  lua_rawget (L, -2);
+  if (!lua_isnil (L, -1))
+    *(gpointer **) lua_touserdata (L, -1) = NULL;
+  lua_pushlightuserdata (L, data->object);
+  lua_pushnil (L);
+  lua_rawset (L, -4);
+  lua_pop (L, 2);
+
+  /* Leave the context and destroy data structure. */
+  lgi_state_leave (data->state_lock);
+  g_free (data);
+}
+
+static int
+object_env_guard_gc (lua_State *L)
+{
+  ObjectEnvGuard *guard = lua_touserdata (L, -1);
+  g_free (g_object_steal_qdata (G_OBJECT (guard->object), guard->id));
+  return 0;
+}
+
+/* Object environment table accessor.  Lua-side prototype:
+   env = object.env(objectinstance) */
+static int
+object_env (lua_State *L)
+{
+  ObjectData *data;
+  gpointer obj = object_get (L, 1);
+  if (!G_IS_OBJECT (obj))
+    /* Only GObject instances can have environment. */
+    return 0;
+
+  /* Lookup 'env' table. */
+  lua_pushlightuserdata (L, &env);
+  lua_rawget (L, LUA_REGISTRYINDEX);
+  lua_pushlightuserdata (L, obj);
+  lua_rawget (L, -2);
+  if (!lua_isnil (L, -1))
+    /* Object's env table for the object is attached to the
+       controlling userdata in the 'env' table. */
+    lua_getfenv (L, -1);
+  else
     {
-      lua_pushnumber (L, i + 1);
-      lua_gettable (L, 2);
-      lgi_type_get_repotype (L, G_TYPE_INVALID, gparam_info);
-      memcpy (&params[i], lgi_record_2c (L, -2, FALSE, FALSE),
-	      sizeof (GParameter));
+      ObjectEnvGuard *guard;
+
+      /* Create new table which will serve as an object env table. */
+      lua_newtable (L);
+
+      /* Create userdata guard, which disconnects env when the state
+	 dies.  Attach the actual env table as env table to the guard
+	 udata. */
+      guard = lua_newuserdata (L, sizeof (ObjectEnvGuard));
+      guard->object = obj;
+      lua_rawgeti (L, -4, OBJECT_QDATA_ENV);
+      guard->id = lua_tonumber (L, -1);
       lua_pop (L, 1);
+      lua_pushvalue (L, -2);
+      lua_setfenv (L, -2);
+
+      /* Store it to the 'env' table. */
+      lua_pushlightuserdata (L, obj);
+      lua_pushvalue (L, -2);
+      lua_rawset (L, -6);
+
+      /* Create and fill new ObjectData structure, to attach it to
+	 object's qdata. */
+      data = g_new (ObjectData, 1);
+      data->object = obj;
+      lua_rawgeti (L, -4, OBJECT_QDATA_THREAD);
+      data->L = lua_tothread (L, -1);
+      data->state_lock = lgi_state_get_lock (data->L);
+
+      /* Attach ObjectData to the object. */
+      g_object_set_qdata_full (G_OBJECT (obj), guard->id,
+			       data, object_data_destroy);
+      lua_pop (L, 2);
     }
 
-  /* Create the object and return it. */
-  return lgi_object_2lua (L, g_object_newv (gtype, size, params), TRUE);
+  return 1;
+}
+
+/* Creates new object.  Lua-side prototypes:
+   res = object.new(luserdata-ptr, already_own)
+   res = object.new(gtype, { GParameter }) */
+static int
+object_new (lua_State *L)
+ {
+  if (lua_islightuserdata (L, 1))
+    /* Create object from the given pointer. */
+    return lgi_object_2lua (L, lua_touserdata (L, 1), lua_toboolean (L, 2));
+  else
+    {
+      /* Normally Lua code uses GObject.Object.new(), which maps
+	 directly to g_object_newv(), but for some reason GOI < 1.0 does
+	 not export this method in the typelib. */
+
+      /* Get GType - 1st argument. */
+      GParameter *params;
+      size_t size, i;
+      GIBaseInfo *gparam_info;
+      GType gtype = lgi_type_get_gtype (L, 1);
+      luaL_checktype (L, 2, LUA_TTABLE);
+
+      /* Find BaseInfo of GParameter. */
+      gparam_info = g_irepository_find_by_name (NULL, "GObject", "Parameter");
+      *lgi_guard_create (L, (GDestroyNotify) g_base_info_unref) = gparam_info;
+
+      /* Prepare array of GParameter structures. */
+      size = lua_objlen (L, 2);
+      params = g_newa (GParameter, size);
+      for (i = 0; i < size; ++i)
+	{
+	  lua_pushnumber (L, i + 1);
+	  lua_gettable (L, 2);
+	  lgi_type_get_repotype (L, G_TYPE_INVALID, gparam_info);
+	  memcpy (&params[i], lgi_record_2c (L, -2, FALSE, FALSE),
+		  sizeof (GParameter));
+	  lua_pop (L, 1);
+	}
+
+      /* Create the object and return it. */
+      return lgi_object_2lua (L, g_object_newv (gtype, size, params), TRUE);
+    }
 }
 
 /* Object API table. */
@@ -415,12 +589,15 @@ static const luaL_Reg object_api_reg[] = {
   { "query", object_query },
   { "field", object_field },
   { "new", object_new },
+  { "env", object_env },
   { NULL, NULL }
 };
 
 void
 lgi_object_init (lua_State *L)
 {
+  char *id;
+
   /* Register metatable. */
   lua_pushlightuserdata (L, &object_mt);
   lua_newtable (L);
@@ -429,6 +606,30 @@ lgi_object_init (lua_State *L)
 
   /* Initialize object cache. */
   lgi_cache_create (L, &cache, "v");
+
+  /* Create table for 'env' tables. */
+  lua_pushlightuserdata (L, &env);
+  lua_newtable (L);
+
+  /* Add OBJECT_QDATA_ENV quark to env table. */
+  id = g_strdup_printf ("lgi:%p", L);
+  lua_pushnumber (L, g_quark_from_string (id));
+  g_free (id);
+  lua_rawseti (L, -2, OBJECT_QDATA_ENV);
+
+  /* Add OBJECT_QDATA_THREAD to env table. */
+  lua_newthread (L);
+  lua_rawseti (L, -2, OBJECT_QDATA_THREAD);
+
+  /* Add 'env' table to the registry. */
+  lua_rawset (L, LUA_REGISTRYINDEX);
+
+  /* Register env_mt table. */
+  lua_pushlightuserdata (L, &env_mt);
+  lua_newtable (L);
+  lua_pushcfunction (L, object_env_guard_gc);
+  lua_setfield (L, -2, "__gc");
+  lua_rawset (L, LUA_REGISTRYINDEX);
 
   /* Create object API table and set it to the parent. */
   lua_newtable (L);
