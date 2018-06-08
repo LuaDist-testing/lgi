@@ -57,9 +57,9 @@ clean :
 check : all
 	cd .. && LD_LIBRARY_PATH=tests:$$LD_LIBRARY_PATH \
 	    GI_TYPELIB_PATH=tests:$$GI_TYPELIB_PATH \
-	    LUA_PATH=./?.lua\;`$(LUA) -e "print(package.path)"` \
-	    LUA_CPATH=./?.so\;`$(LUA) -e "print(package.cpath)"` \
-	    $(LUA) tests/test.lua
+	    LUA_PATH="./?.lua;${LUA_PATH};" \
+	    LUA_CPATH="./?.so;${LUA_CPATH};" \
+	    $(shell command -v dbus-run-session || echo /usr/bin/dbus-launch) $(LUA) tests/test.lua
 
 $(REGRESS) : regress.o
 	$(CC) $(ALL_LDFLAGS) -o $@ regress.o $(LIBS)

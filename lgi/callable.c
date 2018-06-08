@@ -651,6 +651,10 @@ callable_gc (lua_State *L)
     callable_param_destroy (&callable->params[i]);
 
   callable_param_destroy (&callable->retval );
+
+  /* Unset the metatable / make the callable unusable */
+  lua_pushnil (L);
+  lua_setmetatable (L, 1);
   return 0;
 }
 
@@ -1101,13 +1105,13 @@ closure_callback (ffi_cif *cif, void *ret, void **args, void *closure_arg)
   gint res = 0, npos, i, stacktop;
   gboolean call;
   Param *param;
+  lua_State *L;
   (void)cif;
 
   /* Get access to proper Lua context. */
-  lua_State *L = block->callback.L;
   lgi_state_enter (block->callback.state_lock);
-  lua_rawgeti (L, LUA_REGISTRYINDEX, block->callback.thread_ref);
-  L = lua_tothread (L, -1);
+  lua_rawgeti (block->callback.L, LUA_REGISTRYINDEX, block->callback.thread_ref);
+  L = lua_tothread (block->callback.L, -1);
   call = (closure->target_ref != LUA_NOREF);
   if (call)
     {
@@ -1120,8 +1124,9 @@ closure_callback (ffi_cif *cif, void *ret, void **args, void *closure_arg)
 	     the routine we are about to call is actually going to
 	     resume it.  Create new thread instead and switch closure
 	     to its context. */
-	  L = lua_newthread (L);
+	  lua_State *newL = lua_newthread (L);
 	  lua_rawseti (L, LUA_REGISTRYINDEX, block->callback.thread_ref);
+	  L = newL;
 	}
       lua_pop (block->callback.L, 1);
       block->callback.L = L;
