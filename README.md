@@ -55,6 +55,9 @@ List of contributors, in no particular order:
 - Nicola Fontana
 - Andreas Stührk
 - Aaron Faanes
+- Jiří Klimeš
+- Garrett Regier
+- Kenneth Zhou
 
 Many other people contributed to what lgi is today, in many forms -
 writing patches, reporting bugs, packaging for distributions,
@@ -62,7 +65,16 @@ providing ideas, spreading a word...  *Many thanks to all of you!*
 
 ## History
 
-### 0.8.0 (02-Jul-2013)
+### 0.9.0 (23-Mar-2015)
+
+ - new feature: allow defining new properties on custom GObject
+   subclasses implemented using lgi
+ - fix: improve compatibility with locales (turkish)
+ - fix: GPtrArray handling
+ - fix: improve behavior when running in assorted multiple-embedded
+   and concurrent scenarios
+
+### 0.8.0 (02-Jul-2014)
 
  - new feature: add automatically-generated wrappers for
    do_async()/do_finish() pairs.  Documented as Gio.Async namespace

@@ -650,27 +650,53 @@ callable_gc (lua_State *L)
   return 0;
 }
 
-static int
-callable_tostring (lua_State *L)
+static void
+callable_describe (lua_State *L, Callable *callable, FfiClosure *closure)
 {
-  Callable *callable = callable_get (L, 1);
+  luaL_checkstack (L, 2, "");
+
+  if (closure == NULL)
+    lua_pushfstring (L, "%p", callable->address);
+  else
+    {
+      gconstpointer ptr;
+      lua_rawgeti (L, LUA_REGISTRYINDEX, closure->target_ref);
+      ptr = lua_topointer (L, -1);
+      if (ptr != NULL)
+	lua_pushfstring (L, "%s: %p", luaL_typename (L, -1),
+			 lua_topointer (L, -1));
+      else
+	lua_pushstring (L, luaL_typename (L, -1));
+      lua_replace (L, -2);
+    }
+
   if (callable->info)
     {
-      lua_pushfstring (L, "lgi.%s (%p): ",
+      lua_pushfstring (L, "lgi.%s (%s): ",
 		       (GI_IS_FUNCTION_INFO (callable->info) ? "fun" :
 			(GI_IS_SIGNAL_INFO (callable->info) ? "sig" :
 			 (GI_IS_VFUNC_INFO (callable->info) ? "vfn" : "cbk"))),
-		       callable->address);
+		       lua_tostring (L, -1));
       lua_concat (L, lgi_type_get_name (L, callable->info) + 1);
     }
   else
     {
       lua_getfenv (L, 1);
       lua_rawgeti (L, -1, 0);
-      lua_pushfstring (L, "lgi.efn (%p): %s", callable->address,
+      lua_pushfstring (L, "lgi.efn (%s): %s", lua_tostring (L, -2),
 		       lua_tostring (L, -1));
+      lua_replace (L, -2);
     }
 
+  lua_replace (L, -2);
+}
+
+static int
+callable_tostring (lua_State *L)
+{
+  Callable *callable = callable_get (L, 1);
+
+  callable_describe (L, callable, NULL);
   return 1;
 }
 
@@ -1140,9 +1166,20 @@ closure_callback (ffi_cif *cif, void *ret, void **args, void *closure_arg)
     if (!param->internal && param->dir != GI_DIRECTION_OUT)
       {
 	if G_LIKELY (i != 3 || !callable->is_closure_marshal)
-	  callable_param_2lua (L, param, args[i + callable->has_self], 0,
-			       callable_index, callable,
-			       args + callable->has_self);
+	  {
+	    GIArgument *real_arg = args[i + callable->has_self];
+	    GIArgument arg_value;
+
+	    if (param->dir == GI_DIRECTION_INOUT)
+	      {
+	        arg_value = *(GIArgument *) real_arg->v_pointer;
+	        real_arg = &arg_value;
+	      }
+
+	    callable_param_2lua (L, param, real_arg, 0,
+			         callable_index, callable,
+			         args + callable->has_self);
+	  }
 	else
 	  {
 	    /* Workaround incorrectly annotated but crucial
@@ -1171,9 +1208,14 @@ closure_callback (ffi_cif *cif, void *ret, void **args, void *closure_arg)
   if (call)
     {
       if (callable->throws)
-	res = lua_pcall (L, npos, LUA_MULTRET, 0);
-      else
-	lua_call (L, npos, LUA_MULTRET);
+        res = lua_pcall (L, npos, LUA_MULTRET, 0);
+      else if (lua_pcall (L, npos, LUA_MULTRET, 0) != 0)
+        {
+          callable_describe (L, callable, closure);
+          g_warning ("Error raised while calling '%s': %s",
+                     lua_tostring (L, -1), lua_tostring (L, -2));
+          lua_pop (L, 2);
+        }
     }
   else
     {

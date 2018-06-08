@@ -94,10 +94,8 @@ local function load_properties(info)
 end
 
 local function find_constructor(info)
-   local name = info.name:gsub('([%d%l])(%u)', '%1_%2'):lower()
-   local ctor = gi[info.namespace][name]
-
-   -- Check that return value conforms to info type.
+   -- Check that ctor exists and return value conforms to info type.
+   local ctor = gi[info.namespace][core.uncamel(info.name)]
    if ctor then
       local ret = ctor.return_type.interface
       for walk in function(_, c) return c.parent end, nil, info do
@@ -232,6 +230,7 @@ function class.load_interface(namespace, info)
       interface._virtual = component.get_category(
 	 info.vfuncs, nil, load_vfunc_name, load_vfunc_name_reverse)
       interface._class = record.load(type_struct)
+      interface._class._gtype = interface._gtype
       interface._class._allow = true
       interface._class._parent = core.repo.GObject.TypeInterface
    end
@@ -265,6 +264,7 @@ function class.load_class(namespace, info)
       class._virtual = component.get_category(
 	 info.vfuncs, nil, load_vfunc_name, load_vfunc_name_reverse)
       class._class = record.load(type_struct)
+      class._class._gtype = class._gtype
       class._class._allow = true
       class._class._parent =
 	 parent and parent._class or core.repo.GObject.TypeClass
@@ -290,7 +290,8 @@ function class.class_mt:derive(typename, ifaces)
    local new_class = setmetatable(
       {
 	 _parent = self, _override = {}, _guard = {}, _implements = {},
-	 _element = class.derived_mt._element,
+	 _property = {}, _element = class.derived_mt._element,
+	 _property_get = {}, _property_set = {},
 	 _class = self._class, _name = typename
       },
       class.derived_mt)
@@ -309,9 +310,9 @@ function class.class_mt:derive(typename, ifaces)
       end
 
       -- If type specified _class_init method, invoke it.
-      local _class_init = rawget(new_class, '_class_init')
+      local _class_init = new_class._class_init
       if _class_init then
-	 _class_init(new_class)
+	 _class_init(new_class, class_struct)
       end
    end
    local class_init_guard, class_init_addr = core.marshal.callback(
@@ -345,9 +346,11 @@ function class.class_mt:derive(typename, ifaces)
       instance_init = instance_init_addr,
    }
 
+   -- Create the name to register with the GType system.
+   local g_typename = typename:gsub('%.', '') .. core.id
+
    -- Register new type with GType system.
-   local gtype = register_static(self._gtype, typename:gsub('%.', ''),
-				 type_info, {})
+   local gtype = register_static(self._gtype, g_typename, type_info, {})
    rawset(new_class, '_gtype', core.gtype(gtype))
    if not new_class._gtype then
       error(("failed to derive `%s' from `%s'"):format(typename, self._name))
@@ -401,7 +404,7 @@ end
 
 function class.derived_mt:_access_priv(instance, name, ...)
    if select('#', ...) > 0 then
-      error(("%s: cannot assign `%s'"):format(self._name), name, 5)
+      error(("%s: cannot assign `%s'"):format(self._name, name), 5)
    end
    return core.object.env(instance)
 end
