@@ -97,7 +97,7 @@ function cairo.path()
 	 checkv(pts[1].x, 10, 'number')
 	 checkv(pts[1].y, 11, 'number')
       elseif i == 2 then
-	 checkv(t, 'MOVE_TO', 'string')
+	 checkv(t, 'CURVE_TO', 'string')
 	 check(type(pts) == 'table' and #pts == 3)
 	 checkv(pts[1].x, 1, 'number')
 	 checkv(pts[1].y, 2, 'number')
@@ -106,9 +106,14 @@ function cairo.path()
 	 checkv(pts[3].x, 5, 'number')
 	 checkv(pts[3].y, 6, 'number')
       elseif i == 3 then
-	 checkv(t, 'MOVE_TO', 'string')
+	 checkv(t, 'CLOSE_PATH', 'string')
 	 check(type(pts) == 'table' and #pts == 0)
       elseif i == 4 then
+	 checkv(t, 'MOVE_TO', 'string')
+	 check(type(pts) == 'table' and #pts == 1)
+	 checkv(pts[1].x, 10, 'number')
+	 checkv(pts[1].y, 11, 'number')
+      elseif i == 5 then
 	 checkv(t, 'LINE_TO', 'string')
 	 check(type(pts) == 'table' and #pts == 1)
 	 checkv(pts[1].x, 21, 'number')
@@ -118,6 +123,7 @@ function cairo.path()
       end
       i = i + 1
    end
+   check(i == 6)
 end
 
 function cairo.surface_type()
@@ -133,6 +139,144 @@ function cairo.surface_type()
    check(cairo.ImageSurface:is_type_of(s2))
    check(cairo.Surface:is_type_of(s2))
    check(not cairo.RecordingSurface:is_type_of(s2))
+end
+
+function cairo.pattern_type()
+   local cairo = lgi.cairo
+   local pattern
+
+   pattern = cairo.Pattern.create_rgb(1, 1, 1)
+   check(cairo.SolidPattern:is_type_of(pattern))
+   check(cairo.Pattern:is_type_of(pattern))
+   pattern = cairo.SolidPattern(1, 1, 1)
+   check(cairo.SolidPattern:is_type_of(pattern))
+   pattern = cairo.SolidPattern(1, 1, 1, 1)
+   check(cairo.SolidPattern:is_type_of(pattern))
+
+   local surface = cairo.ImageSurface('ARGB32', 100, 100)
+   pattern = cairo.Pattern.create_for_surface(surface)
+   check(select(2, pattern:get_surface()) == surface)
+   check(cairo.SurfacePattern:is_type_of(pattern))
+   check(cairo.Pattern:is_type_of(pattern))
+   pattern = cairo.SurfacePattern(surface)
+   check(cairo.SurfacePattern:is_type_of(pattern))
+
+   pattern = cairo.Pattern.create_linear(0, 0, 10, 10)
+   check(cairo.LinearPattern:is_type_of(pattern))
+   check(cairo.GradientPattern:is_type_of(pattern))
+   check(cairo.Pattern:is_type_of(pattern))
+   pattern = cairo.LinearPattern(0, 0, 10, 10)
+   check(cairo.LinearPattern:is_type_of(pattern))
+
+   pattern = cairo.Pattern.create_radial(0, 0, 5, 10, 10, 5)
+   check(cairo.RadialPattern:is_type_of(pattern))
+   check(cairo.GradientPattern:is_type_of(pattern))
+   check(cairo.Pattern:is_type_of(pattern))
+   pattern = cairo.RadialPattern(0, 0, 5, 10, 10, 5)
+   check(cairo.RadialPattern:is_type_of(pattern))
+
+   if cairo.version >= cairo.version_encode(1, 12, 0) then
+      pattern = cairo.Pattern.create_mesh()
+      check(cairo.MeshPattern:is_type_of(pattern))
+      check(not cairo.GradientPattern:is_type_of(pattern))
+      check(cairo.Pattern:is_type_of(pattern))
+      pattern = cairo.MeshPattern()
+      check(cairo.MeshPattern:is_type_of(pattern))
+   end
+end
+
+function cairo.pattern_mesh()
+   local cairo = lgi.cairo
+
+   -- Mesh patterns are introduced in cairo 1.12
+   if cairo.version < cairo.version_encode(1, 12, 0) then
+      return
+   end
+
+   local mesh = cairo.Pattern.create_mesh()
+   local pattern = cairo.Pattern.create_radial(1, 2, 3, 4, 5, 6)
+
+   check(cairo.Pattern:is_type_of(mesh))
+   check(cairo.MeshPattern:is_type_of(mesh))
+
+   check(cairo.Pattern:is_type_of(pattern))
+   check(not cairo.MeshPattern:is_type_of(pattern))
+
+   local function check_status(status)
+       checkv(status, 'SUCCESS', 'string')
+   end
+
+   -- Taken from cairo's pattern-getters test and slightly adapted to use all
+   -- functions of the mesh pattern API
+   local status, count = mesh:get_patch_count()
+   check_status(status)
+   checkv(count, 0, 'number')
+
+   mesh:begin_patch()
+   mesh:move_to(0, 0)
+   mesh:line_to(0, 3)
+   mesh:line_to(3, 3)
+   mesh:line_to(3, 0)
+   mesh:set_corner_color_rgba(0, 1, 1, 1, 1)
+   mesh:end_patch()
+
+   local status, count = mesh:get_patch_count()
+   check_status(status)
+   checkv(count, 1, 'number')
+
+   for k, v in pairs({ { 1, 1 }, { 1, 2 }, { 2, 2 }, { 2, 1 } }) do
+       local status, x, y = mesh:get_control_point(0, k - 1)
+       check_status(status)
+       checkv(x, v[1], 'number')
+       checkv(y, v[2], 'number')
+   end
+
+   mesh:begin_patch()
+   mesh:move_to(0, 0)
+   mesh:line_to(1, 0)
+   mesh:curve_to(1, 1, 1, 2, 0, 1)
+   mesh:set_corner_color_rgb(0, 1, 1, 1)
+   mesh:set_control_point(2, 0.5, 0.5)
+   mesh:end_patch()
+
+   local status, count = mesh:get_patch_count()
+   check_status(status)
+   checkv(count, 2, 'number')
+
+   for k, v in pairs({ 1, 0, 0, 1 }) do
+       local status, r, g, b, a = mesh:get_corner_color_rgba(1, k - 1)
+       check_status(status)
+       checkv(r, v, 'number')
+       checkv(g, v, 'number')
+       checkv(b, v, 'number')
+       checkv(a, v, 'number')
+   end
+
+   local i = 0
+   local expected = {
+      { { 0, 1 }, { 0, 2 }, { 0, 3 } },
+      { { 1, 3 }, { 2, 3 }, { 3, 3 } },
+      { { 3, 2 }, { 3, 1 }, { 3, 0 } },
+      { { 2, 0 }, { 1, 0 }, { 0, 0 } },
+   }
+   for t, pts in mesh:get_path(0):pairs() do
+      if i == 0 then
+	 checkv(t, 'MOVE_TO', 'string')
+	 check(type(pts) == 'table' and #pts == 1)
+	 checkv(pts[1].x, 0, 'number')
+	 checkv(pts[1].y, 0, 'number')
+      else
+	 -- Mesh patterns turn everything into curves. :-(
+	 checkv(t, 'CURVE_TO', 'string')
+	 check(type(pts) == 'table' and #pts == 3)
+	 for k, v in pairs(expected[i]) do
+	    checkv(pts[k].x, v[1], 'number')
+	    checkv(pts[k].y, v[2], 'number')
+	 end
+      end
+      i = i + 1
+   end
+   check(i == #expected + 1)
 end
 
 function cairo.context_transform()

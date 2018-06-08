@@ -98,6 +98,11 @@ void lgi_state_leave (gpointer state_lock);
    requirements. */
 #define LGI_PARENT_IS_RETVAL (G_MAXINT - 1)
 
+/* Yet another special value for 'parent' argument, meaning that the
+   value already contains address of caller-allocated space into which
+   the result should be marshalled. */
+#define LGI_PARENT_CALLER_ALLOC (G_MAXINT - 2)
+
 /* Marshalls single value from Lua to GLib/C. Returns number of temporary
    entries pushed to Lua stack, which should be popped before function call
    returns. */
@@ -114,7 +119,8 @@ gboolean lgi_marshal_2c_caller_alloc (lua_State *L, GITypeInfo *ti,
 /* Marshalls single value from GLib/C to Lua. If parent is non-0, it
    is stack index of parent structure/array in which this C value
    resides. */
-void lgi_marshal_2lua (lua_State *L, GITypeInfo *ti, GITransfer xfer,
+void lgi_marshal_2lua (lua_State *L, GITypeInfo *ti, GIArgInfo *ai,
+		       GIDirection dir, GITransfer xfer,
 		       gpointer source, int parent,
 		       GICallableInfo *ci, void **args);
 
@@ -156,24 +162,23 @@ gpointer lgi_record_new (lua_State *L, int count);
    the arg record is part of). */
 void lgi_record_2lua (lua_State *L, gpointer addr, gboolean own, int parent);
 
-/* Gets pointer to C-structure from given Lua-side object. Expects
-   repo typetable of expected argument pushed on the top of the stack,
-   removes it. */
-gpointer lgi_record_2c (lua_State *L, int narg, gboolean optional,
-			gboolean nothrow);
+/* Gets pointer to C-structure from given Lua-side object, or copies
+   record to specified address. Expects repo typetable of expected
+   argument pushed on the top of the stack, removes it. */
+void lgi_record_2c (lua_State *L, gint narg, gpointer target, gboolean by_value,
+		    gboolean own, gboolean optional, gboolean nothrow);
 
 /* Creates Lua-side part (proxy) of given object. If the object is not
    owned (own == FALSE), an ownership is automatically acquired.  Returns
    number of elements pushed to the stack, i.e. always 1. */
-int
-lgi_object_2lua (lua_State *L, gpointer obj, gboolean own);
+int lgi_object_2lua (lua_State *L, gpointer obj, gboolean own,
+		     gboolean no_sink);
 
 /* Gets pointer to C-side object represented by given Lua proxy. If
    gtype is not G_TYPE_INVALID, the real type is checked to conform to
    requested type. */
-gpointer
-lgi_object_2c (lua_State *L, int narg, GType gtype, gboolean optional,
-	       gboolean nothrow, gboolean transfer);
+gpointer lgi_object_2c (lua_State *L, int narg, GType gtype, gboolean optional,
+			gboolean nothrow, gboolean transfer);
 
 #if !GLIB_CHECK_VERSION(2, 30, 0)
 /* Workaround for broken g_struct_info_get_size() for GValue, see

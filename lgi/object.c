@@ -173,12 +173,15 @@ object_load_function (lua_State *L, GType gtype, const gchar *name)
 
 /* Adds one reference to the object, returns TRUE if succeded. */
 static gboolean
-object_refsink (lua_State *L, gpointer obj)
+object_refsink (lua_State *L, gpointer obj, gboolean no_sink)
 {
   GType gtype = G_TYPE_FROM_INSTANCE (obj);
   if (G_TYPE_IS_OBJECT (gtype))
     {
-      g_object_ref_sink (obj);
+      if (G_UNLIKELY (no_sink))
+	g_object_ref (obj);
+      else
+	g_object_ref_sink (obj);
       return TRUE;
     }
 
@@ -271,7 +274,8 @@ object_tostring (lua_State *L)
 {
   gpointer obj = object_get (L, 1);
   GType gtype = G_TYPE_FROM_INSTANCE (obj);
-  if (object_type (L, gtype) != G_TYPE_INVALID)
+  lua_getfenv (L, 1);
+  if (!lua_isnil (L, -1))
     lua_getfield (L, -1, "_name");
   else
     lua_pushliteral (L, "<??\?>");
@@ -298,13 +302,13 @@ lgi_object_2c (lua_State *L, int narg, GType gtype, gboolean optional,
     object_type_error (L, narg, gtype);
 
   if (transfer)
-    object_refsink (L, obj);
+    object_refsink (L, obj, FALSE);
 
   return obj;
 }
 
 int
-lgi_object_2lua (lua_State *L, gpointer obj, gboolean own)
+lgi_object_2lua (lua_State *L, gpointer obj, gboolean own, gboolean no_sink)
 {
   /* NULL pointer results in nil. */
   if (!obj)
@@ -337,6 +341,9 @@ lgi_object_2lua (lua_State *L, gpointer obj, gboolean own)
   lua_pushlightuserdata (L, &object_mt);
   lua_rawget (L, LUA_REGISTRYINDEX);
   lua_setmetatable (L, -2);
+  object_type (L, G_TYPE_FROM_INSTANCE (obj));
+  lua_setfenv (L, -2);
+
 
   /* Store newly created userdata proxy into cache. */
   lua_pushlightuserdata (L, obj);
@@ -350,7 +357,7 @@ lgi_object_2lua (lua_State *L, gpointer obj, gboolean own)
   /* If we don't own the object, take its ownership (and also remove
      floating reference if there is any). */
   if (!own)
-    object_refsink (L, obj);
+    object_refsink (L, obj, no_sink);
 
   return 1;
 }
@@ -364,10 +371,8 @@ object_access (lua_State *L)
   /* Check that 1st arg is an object and invoke one of the forms:
      result = type:_access(objectinstance, name)
      type:_access(objectinstance, name, val) */
-  gpointer object = object_get (L, 1);
-  GType gtype = G_TYPE_FROM_INSTANCE (object);
-  if (object_type (L, gtype) == G_TYPE_INVALID)
-    object_type_error (L, 1, gtype);
+  object_get (L, 1);
+  lua_getfenv (L, 1);
   return lgi_marshal_access (L, getmode, 1, 2, 3);
 }
 
@@ -380,16 +385,12 @@ static const luaL_Reg object_mt_reg[] = {
   { NULL, NULL }
 };
 
-static const char *const query_mode[] = {
-  "addr", "gtype", "repo", "class", NULL
-};
+static const char *const query_mode[] = { "addr", "repo", NULL };
 
 /* Queries for assorted instance properties. Lua-side prototype:
    res = object.query(objectinstance, mode [, iface-gtype])
    Supported mode strings are:
-   'gtype': returns real gtype of this instance.
    'repo':  returns repotable for this instance.
-   'class': returns class struct record of this instance.
    'addr':  returns lightuserdata with pointer to the object. */
 static int
 object_query (lua_State *L)
@@ -397,37 +398,12 @@ object_query (lua_State *L)
   gpointer object = object_check (L, 1);
   if (object)
     {
-      GType gtype;
       int mode = luaL_checkoption (L, 2, query_mode[0], query_mode);
       if (mode == 0)
-        {
-          lua_pushlightuserdata (L, object);
-          return 1;
-        }
-      gtype = lgi_type_get_gtype (L, 3);
-      if (gtype == G_TYPE_INVALID)
-        gtype = G_TYPE_FROM_INSTANCE (object);
-      if (mode == 1)
-	{
-	  lua_pushnumber (L, gtype);
-	  return 1;
-	}
+	lua_pushlightuserdata (L, object);
       else
-	{
-	  /* Get repotype structure. */
-	  if (object_type (L, gtype) != G_TYPE_INVALID)
-	    {
-	      if (mode == 3)
-		{
-		  gpointer typestruct = !G_TYPE_IS_INTERFACE (gtype)
-		    ? G_TYPE_INSTANCE_GET_CLASS (object, gtype, GTypeClass)
-		    : G_TYPE_INSTANCE_GET_INTERFACE (object, gtype, GTypeClass);
-		  lua_getfield (L, -1, "_class");
-		  lgi_record_2lua (L, typestruct, FALSE, 0);
-		}
-	      return 1;
-	    }
-	}
+	lua_getfenv (L, 1);
+      return 1;
     }
   return 0;
 }
@@ -544,14 +520,15 @@ object_env (lua_State *L)
 }
 
 /* Creates new object.  Lua-side prototypes:
-   res = object.new(luserdata-ptr, already_own)
+   res = object.new(luserdata-ptr[, already_own[, no_sink]])
    res = object.new(gtype, { GParameter }) */
 static int
 object_new (lua_State *L)
- {
+{
   if (lua_islightuserdata (L, 1))
     /* Create object from the given pointer. */
-    return lgi_object_2lua (L, lua_touserdata (L, 1), lua_toboolean (L, 2));
+    return lgi_object_2lua (L, lua_touserdata (L, 1), lua_toboolean (L, 2),
+			    lua_toboolean (L, 3));
   else
     {
       /* Normally Lua code uses GObject.Object.new(), which maps
@@ -577,13 +554,13 @@ object_new (lua_State *L)
 	  lua_pushnumber (L, i + 1);
 	  lua_gettable (L, 2);
 	  lgi_type_get_repotype (L, G_TYPE_INVALID, gparam_info);
-	  memcpy (&params[i], lgi_record_2c (L, -2, FALSE, FALSE),
-		  sizeof (GParameter));
+	  lgi_record_2c (L, -2, &params[i], TRUE, FALSE, FALSE, FALSE);
 	  lua_pop (L, 1);
 	}
 
       /* Create the object and return it. */
-      return lgi_object_2lua (L, g_object_newv (gtype, size, params), TRUE);
+      return lgi_object_2lua (L, g_object_newv (gtype, size, params),
+			      TRUE, FALSE);
     }
 }
 

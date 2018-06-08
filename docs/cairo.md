@@ -27,6 +27,22 @@ create new context on specified surface, it is possible to use either
 `local cr = cairo.Context.create(surface)` or `local cr =
 cairo.Context(surface)`.
 
+### Version checking
+
+`cairo.version` and `cairo.version_string` fields contain current
+runtime cairo library version, as returned by their C counterparts
+`cairo_version()` and `cairo_version_string()`.  Original
+`CAIRO_VERSION_ENCODE` macro is reimplemented as
+`cairo.version_encode(major, minor, micro)`.  For example, following
+section shows how to guard code which should be run only when cairo
+version is at least 1.12:
+
+    if cairo.version >= cairo.version_encode(1, 12, 0) then
+       -- Cairo 1.12-specific code
+    else
+       -- Fallback to older cairo version code
+    end
+
 ### Synthetic properties
 
 There are many getter and setter functions for assorted cairo objects.
@@ -47,7 +63,7 @@ In general, any kind of `get_xxx()` method call on any cairo object
 can be replaced using `xxx` property on the object, and any
 `set_xxx()` method can be replaced by setting `xxx` property.
 
-### Surface hierarchy
+### cairo.Surface hierarchy
 
 Cairo provides basic rendering surface object `cairo.Surface`, and a
 bunch of specialized surfaces implementing rendering to assorted
@@ -79,6 +95,28 @@ checking the type of the surface:
     else
 	print('unsupported type of the surface')
     end
+
+### cairo.Pattern hierarchy
+
+cairo's pattern API actually hides the inheritance of assorted pattern
+types.  lgi binding brings this hierarchy up in the same way as for
+surfaces described in previous section.  Following hierarchy exists:
+
+    cairo.Pattern
+        cairo.SolidPattern
+	cairo.SurfacePattern
+	cairo.GradientPattern
+	    cairo.LinearPattern
+	    cairo.RadialPattern
+	cairo.MeshPattern
+
+Patterns can be created using static factory methods on
+`cairo.Pattern` as documented in cairo documentation.  In addition,
+lgi maps creation methods to specific subclass constructors, so
+following snippets are equivalent:
+
+    local pattern = cairo.Pattern.create_linear(0, 0, 10, 10)
+    local pattern = cairo.LinearPattern(0, 0, 10, 10)
 
 ### cairo.Context path iteration
 
