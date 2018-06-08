@@ -9,9 +9,6 @@
 --]]--------------------------------------------------------------------------
 
 local lgi = require 'lgi'
-local GLib = lgi.GLib
-local Gio = lgi.Gio
-local GObject = lgi.GObject
 local bytes = require 'bytes'
 
 local fail = testsuite.fail
@@ -326,6 +323,7 @@ function gireg.utf8_const_in()
    local R = lgi.Regress
    local utf8_const = 'const \226\153\165 utf8'
    R.test_utf8_const_in(utf8_const)
+   R.test_utf8_const_in(bytes.new(utf8_const .. '\0'))
 end
 
 function gireg.utf8_out()
@@ -472,6 +470,7 @@ end
 
 function gireg.array_gtype_in()
    local R = lgi.Regress
+   local GObject = lgi.GObject
    local str = R.test_array_gtype_in {
       lgi.GObject.Value._gtype,
       lgi.GObject.type_from_name('gchar')
@@ -1003,6 +1002,7 @@ end
 
 function gireg.closure_simple()
    local R = lgi.Regress
+   local GObject = lgi.GObject
    local closure = GObject.Closure(function(...)
 				      check(select('#', ...) == 0)
 				      return 42
@@ -1014,6 +1014,7 @@ function gireg.closure_simple()
 end
 
 function gireg.closure_arg()
+   local GObject = lgi.GObject
    local R = lgi.Regress
    local closure = GObject.Closure(function(int, ...)
 				      check(select('#', ...) == 0)
@@ -1026,6 +1027,7 @@ function gireg.closure_arg()
 end
 
 function gireg.gvalue_assign()
+   local GObject = lgi.GObject
    local V = GObject.Value
 
    local v = V()
@@ -1058,6 +1060,7 @@ function gireg.gvalue_assign()
 end
 
 function gireg.gvalue_arg()
+   local GObject = lgi.GObject
    local R = lgi.Regress
    checkv(R.test_int_value_arg(GObject.Value('gint', 42)), 42, 'number')
 end
@@ -1070,8 +1073,11 @@ function gireg.gvalue_return()
 end
 
 function gireg.gvalue_date()
+   local GObject = lgi.GObject
+   local GLib = lgi.GLib
    local R = lgi.Regress
-   local v = R.test_date_in_gvalue()
+   local v
+   v = R.test_date_in_gvalue()
    check(v.gtype == 'GDate')
    check(v.value:get_day() == 5)
    check(v.value:get_month() == 'DECEMBER')
@@ -1086,6 +1092,7 @@ function gireg.gvalue_date()
 end
 
 function gireg.gvalue_strv()
+   local GObject = lgi.GObject
    local R = lgi.Regress
    local v = R.test_strv_in_gvalue()
    check(v.gtype == 'GStrv')

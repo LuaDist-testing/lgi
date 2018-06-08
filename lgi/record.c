@@ -1,7 +1,7 @@
 /*
  * Dynamic Lua binding to GObject using dynamic gobject-introspection.
  *
- * Copyright (c) 2010, 2011 Pavel Holejsovsky
+ * Copyright (c) 2010, 2011, 2012 Pavel Holejsovsky
  * Licensed under the MIT license:
  * http://www.opensource.org/licenses/mit-license.php
  *
@@ -22,8 +22,7 @@ typedef enum _RecordStore
 
     /* Record is placed inside some other (parent) record.  In order
        to keep parent record alive, parent record is stored in
-       LUA_REGISTRYINDEX table, keyed by lightuserdata of address of
-       this Record object. */
+       parent_cache table. */
     RECORD_STORE_NESTED,
 
     /* Record is allocated by its GLib means and must be freed (by
@@ -38,12 +37,18 @@ typedef struct _Record
   /* Address of the record memory data. */
   gpointer addr;
 
-  /* Store mode of the record. TODO: Might be possible to stuff it
-     into 2 lowest bits of addr, although it is a bit hacky. */
+  /* Store mode of the record. */
   RecordStore store;
 
-  /* If the record is allocated 'on the stack', its data is here. */
-  gchar data[1];
+  /* If the record is allocated 'on the stack', its data is
+     here. Anonymous union makes sure that data is properly aligned to
+     hold (hopefully) any structure. */
+  union {
+    gchar data[1];
+    double align_double;
+    long align_long;
+    gpointer align_ptr;
+  };
 } Record;
 
 /* lightuserdata key to LUA_REGISTRYINDEX containing metatable for
@@ -59,7 +64,7 @@ static int record_cache;
 static int parent_cache;
 
 gpointer
-lgi_record_new (lua_State *L, GIBaseInfo *ri)
+lgi_record_new (lua_State *L, int count)
 {
   Record *record;
   size_t size;
@@ -67,9 +72,9 @@ lgi_record_new (lua_State *L, GIBaseInfo *ri)
   luaL_checkstack (L, 4, "");
 
   /* Calculate size of the record to allocate. */
-  size = G_STRUCT_OFFSET (Record, data)
-    + ((g_base_info_get_type (ri) == GI_INFO_TYPE_UNION)
-       ? g_union_info_get_size (ri) : g_struct_info_get_size (ri));
+  lua_getfield (L, -1, "_size");
+  size = G_STRUCT_OFFSET (Record, data) + lua_tonumber (L, -1) * count;
+  lua_pop (L, 1);
 
   /* Allocate new userdata for record object, attach proper
      metatable. */
@@ -82,7 +87,7 @@ lgi_record_new (lua_State *L, GIBaseInfo *ri)
   record->store = RECORD_STORE_EMBEDDED;
 
   /* Get ref_repo table, attach it as an environment. */
-  lgi_type_get_repotype (L, G_TYPE_INVALID, ri);
+  lua_pushvalue (L, -2);
   lua_setfenv (L, -2);
 
   /* Store newly created record into the cache. */
@@ -92,6 +97,20 @@ lgi_record_new (lua_State *L, GIBaseInfo *ri)
   lua_pushvalue (L, -3);
   lua_rawset (L, -3);
   lua_pop (L, 1);
+
+  /* Invoke '_attach' method if present on the typetable. */
+  lua_getfield (L, -2, "_attach");
+  if (!lua_isnil (L, -1))
+    {
+      lua_pushvalue (L, -3);
+      lua_pushvalue (L, -3);
+      lua_call (L, 2, 0);
+    }
+  else
+    lua_pop (L, 1);
+
+  /* Remove refrepo table from the stack. */
+  lua_remove (L, -2);
   return record->addr;
 }
 
@@ -111,7 +130,10 @@ lgi_record_2lua (lua_State *L, gpointer addr, gboolean own, int parent)
     }
 
   /* Convert 'parent' index to an absolute one. */
-  lgi_makeabs (L, parent);
+  if (parent == LGI_PARENT_IS_RETVAL || parent == LGI_PARENT_FORCE_POINTER)
+    parent = 0;
+  else
+    lgi_makeabs (L, parent);
 
   /* Prepare access to cache. */
   lua_pushlightuserdata (L, &record_cache);
@@ -185,6 +207,17 @@ lgi_record_2lua (lua_State *L, gpointer addr, gboolean own, int parent)
       lua_pushvalue (L, -2);
       lua_rawset (L, -5);
     }
+
+  /* Invoke '_attach' method if present on the typetable. */
+  lua_getfield (L, -4, "_attach");
+  if (!lua_isnil (L, -1))
+    {
+      lua_pushvalue (L, -5);
+      lua_pushvalue (L, -3);
+      lua_call (L, 2, 0);
+    }
+  else
+    lua_pop (L, 1);
 
   /* Clean up the stack; remove cache table from under our result, and
      remove also typetable which was present when we were called. */
@@ -296,16 +329,40 @@ record_gc (lua_State *L)
       /* Free the owned record. */
       GType gtype;
       lua_getfenv (L, 1);
-      lua_getfield (L, -1, "_gtype");
-      gtype = (GType) lua_touserdata (L, -1);
-      if (G_TYPE_IS_BOXED (gtype))
-	g_boxed_free (gtype, record->addr);
-      else
+      for (;;)
 	{
-	  /* Use custom _free function. */
-	  void (*free_func)(gpointer) = lgi_gi_load_function (L, -2, "_free");
-	  g_assert (free_func);
-	  free_func (record->addr);
+	  lua_getfield (L, -1, "_gtype");
+	  gtype = (GType) lua_touserdata (L, -1);
+	  lua_pop (L, 1);
+	  if (G_TYPE_IS_BOXED (gtype))
+	    {
+	      g_boxed_free (gtype, record->addr);
+	      break;
+	    }
+	  else
+	    {
+	      /* Use custom _free function. */
+	      void (*free_func)(gpointer) =
+		lgi_gi_load_function (L, -1, "_free");
+	      if (free_func)
+		{
+		  free_func (record->addr);
+		  break;
+		}
+	    }
+
+	  /* Try to get parent of the type. */
+	  lua_getfield (L, -1, "_parent");
+	  lua_replace (L, -2);
+	  if (lua_isnil (L, -1))
+	    {
+	      lua_getfenv (L, 1);
+	      lua_getfield (L, -1, "_name");
+	      g_warning ("unable to record_gc %s, leaking it",
+			 lua_tostring (L, -1));
+	      lua_pop (L, 2);
+	      break;
+	    }
 	}
     }
   else if (record->store == RECORD_STORE_NESTED)
@@ -380,7 +437,8 @@ static const struct luaL_Reg record_meta_reg[] = {
    unless 'addr' argument (lightuserdata or integer) is specified, in
    which case wraps specified address as record.  Lua prototype:
 
-   recordinstance = core.record.new(structinfo|unioninfo[, addr[, own]])
+   recordinstance = core.record.new(repotable[, nil[, count]])
+   recordinstance = core.record.new(repotable[, addr[, own]])
 
    own (default false) means whether Lua takes record ownership
    (i.e. if it tries to deallocate the record when created Lua proxy
@@ -388,24 +446,23 @@ static const struct luaL_Reg record_meta_reg[] = {
 static int
 record_new (lua_State *L)
 {
-  GIBaseInfo **info = luaL_checkudata (L, 1, LGI_GI_INFO);
-  GIInfoType type = g_base_info_get_type (*info);
-  luaL_argcheck (L, type == GI_INFO_TYPE_STRUCT || type == GI_INFO_TYPE_UNION,
-		 1, "record expected");
   if (lua_isnoneornil (L, 2))
-    /* Create new record instance. */
-    lgi_record_new (L, *info);
+    {
+      /* Create new record instance. */
+      lua_pushvalue (L, 1);
+      lgi_record_new (L, luaL_optinteger (L, 3, 1));
+    }
   else
     {
       /* Wrap record at existing address. */
       gpointer addr = (lua_type (L, 2) == LUA_TLIGHTUSERDATA)
 	? addr = lua_touserdata (L, 2)
 	: (gpointer) luaL_checkinteger (L, 2);
-      gboolean owned = lua_toboolean (L, 3);
-      lgi_type_get_repotype (L, G_TYPE_INVALID, *info);
-      g_assert (!lua_isnil (L, -1));
-      lgi_record_2lua (L, addr, owned, 0);
+      gboolean own = lua_toboolean (L, 3);
+      lua_pushvalue (L, 1);
+      lgi_record_2lua (L, addr, own, 0);
     }
+
   return 1;
 }
 
@@ -416,10 +473,10 @@ static const char* const query_modes[] = { "gtype", "repo", "addr", NULL };
    Supported 'mode' strings are:
 
    'gtype': returns real gtype of this instance, nil when it is not boxed.
-   'repo':  returns repotable of this instance.
+   'repo': returns repotable of this instance.
    'addr': returns address of the object.  If 3rd argument is either
-	   gtype or info, checks, whether record conforms to the specs
-	   and if not, throws an error.  */
+	   repotable, checks, whether record conforms to the specs and
+	   if not, throws an error.  */
 static int
 record_query (lua_State *L)
 {
@@ -446,17 +503,13 @@ record_query (lua_State *L)
     }
   else
     {
-      GType gtype = G_TYPE_INVALID;
-      GIBaseInfo **info = lgi_udata_test (L, 3, LGI_GI_INFO);
-      if (info == NULL)
-	gtype = lgi_type_get_gtype (L, 3);
-      if (info != NULL || gtype != G_TYPE_INVALID)
+      if (lua_isnoneornil (L, 3))
+	lua_pushlightuserdata (L, record_check (L, 1)->addr);
+      else
 	{
-	  lgi_type_get_repotype (L, gtype, info != NULL ? *info : NULL);
+	  lua_pushvalue (L, 3);
 	  lua_pushlightuserdata (L, lgi_record_2c (L, 1, TRUE, FALSE));
 	}
-      else
-	lua_pushlightuserdata (L, record_check (L, 1)->addr);
 
       return 1;
     }
@@ -492,11 +545,85 @@ record_cast (lua_State *L)
   return 1;
 }
 
+/* Assumes that given record is the first of the array of records and
+   fetches record with specified index.  Negative indices are allowed,
+   but no boundschecking is made.
+   res = core.record.fromarray(recordinstance, index) */
+static int
+record_fromarray (lua_State *L)
+{
+  Record *record = record_get (L, 1);
+  int index = luaL_checkinteger (L, 2);
+  int parent = 0;
+  gboolean own = FALSE;
+  int size;
+
+  /* Find out the size of this record. */
+  lua_getfenv (L, 1);
+  lua_getfield (L, -1, "_size");
+  size = lua_tonumber (L, -1);
+
+  if (record->store == RECORD_STORE_EMBEDDED)
+    /* Parent is actually our embedded record. */
+    parent = 1;
+  else if (record->store == RECORD_STORE_NESTED)
+    {
+      /* Share parent with the original record. */
+      lua_pushlightuserdata (L, &parent_cache);
+      lua_rawget (L, LUA_REGISTRYINDEX);
+      lua_pushvalue (L, 1);
+      lua_rawget (L, -2);
+      parent = -2;
+    }
+
+  lua_getfenv (L, 1);
+  lgi_record_2lua (L, ((guint8 *) record->addr) + size * index, own, parent);
+  return 1;
+}
+
+/* Changes ownership mode or repotable of the record.
+   record.set(recordinstance, true|false)
+   - 'own' if true, changing ownership to owned, otherwise to
+     unowned.
+
+   record.set(recordinstance, repotable)
+   - 'repotable' record repotable to which this instance should be
+     reassigned. */
+static int
+record_set (lua_State *L)
+{
+  Record *record = record_get (L, 1);
+  if (lua_type (L, 2) == LUA_TTABLE)
+    {
+      /* Assign new typeinfo to the record instance. */
+      lua_pushvalue (L, 2);
+      lua_setfenv (L, 1);
+    }
+  else
+    {
+      /* Change ownership type of the record. */
+      if (lua_toboolean (L, 2))
+        {
+          if (record->store == RECORD_STORE_EXTERNAL)
+            record->store = RECORD_STORE_ALLOCATED;
+        }
+      else
+        {
+          if (record->store == RECORD_STORE_ALLOCATED)
+            record->store = RECORD_STORE_EXTERNAL;
+        }
+    }
+
+  return 0;
+}
+
 static const struct luaL_Reg record_api_reg[] = {
   { "new", record_new },
   { "query", record_query },
   { "field", record_field },
   { "cast", record_cast },
+  { "fromarray", record_fromarray },
+  { "set", record_set },
   { NULL, NULL }
 };
 

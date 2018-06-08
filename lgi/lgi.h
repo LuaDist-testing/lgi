@@ -24,6 +24,7 @@
 #include <glib-object.h>
 #include <glib/gprintf.h>
 #include <girepository.h>
+#include <gmodule.h>
 
 /* Makes sure that Lua stack offset is absolute one, not relative. */
 #define lgi_makeabs(L, x) do { if (x < 0) x += lua_gettop (L) + 1; } while (0)
@@ -86,6 +87,17 @@ gpointer lgi_state_get_lock (lua_State *L);
 void lgi_state_enter (gpointer left_state);
 void lgi_state_leave (gpointer state_lock);
 
+/* Special value for 'parent' argument of marshal_2c/lua.  When parent
+   is set to this value, marshalling takes place always into pointer
+   on the C side.  This isuseful when marshalling value from/to lists,
+   arrays and hashtables. */
+#define LGI_PARENT_FORCE_POINTER G_MAXINT
+
+/* Another special value for 'parent' argument, meaning that the value
+   should be handled as return value, according to ffi_call retval
+   requirements. */
+#define LGI_PARENT_IS_RETVAL (G_MAXINT - 1)
+
 /* Marshalls single value from Lua to GLib/C. Returns number of temporary
    entries pushed to Lua stack, which should be popped before function call
    returns. */
@@ -134,8 +146,9 @@ gpointer lgi_closure_create (lua_State* L, gpointer user_data,
 /* GDestroyNotify-compatible callback for destroying closure. */
 void lgi_closure_destroy (gpointer user_data);
 
-/* Allocates and creates new record instance. */
-gpointer lgi_record_new (lua_State *L, GIBaseInfo *ri);
+/* Allocates and creates new record instance. Assumes that repotype table
+   is on the stack, replaces it with newly created proxy. */
+gpointer lgi_record_new (lua_State *L, int count);
 
 /* Creates Lua-side part of given record. Assumes that repotype table
    is on the stack, replaces it with newly created proxy. If parent

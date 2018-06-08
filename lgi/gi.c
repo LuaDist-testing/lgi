@@ -40,34 +40,20 @@ lgi_gi_info_new (lua_State *L, GIBaseInfo *info)
   return 1;
 }
 
-static int
-pgetfield (lua_State *L)
-{
-  lua_gettable (L, 1);
-  return 1;
-}
-
 gpointer
 lgi_gi_load_function (lua_State *L, int typetable, const char *name)
 {
   GIBaseInfo **info;
   gpointer symbol = NULL;
 
-  /* This is just complicated way to perform pcall in C code. Sans
-     failure handling, lua_getfield (L, typetable, name) would be
-     enough here. */
   luaL_checkstack (L, 3, "");
-  lgi_makeabs (L, typetable);
-  lua_pushcfunction (L, pgetfield);
-  lua_pushvalue (L, typetable);
-  lua_pushstring (L, name);
-  if (lua_pcall (L, 2, 1, 0) == 0)
-    {
-      info = lgi_udata_test (L, -1, LGI_GI_INFO);
-      if (info && GI_IS_FUNCTION_INFO (*info))
-	g_typelib_symbol (g_base_info_get_typelib (*info),
-			  g_function_info_get_symbol (*info), &symbol);
-    }
+  lua_getfield (L, typetable, name);
+  info = lgi_udata_test (L, -1, LGI_GI_INFO);
+  if (info && GI_IS_FUNCTION_INFO (*info))
+      g_typelib_symbol (g_base_info_get_typelib (*info),
+                        g_function_info_get_symbol (*info), &symbol);
+  else if (lua_islightuserdata (L, -1))
+      symbol = lua_touserdata (L, -1);
   lua_pop (L, 1);
   return symbol;
 }
@@ -610,6 +596,28 @@ static const luaL_Reg gi_info_reg[] = {
   { NULL, NULL }
 };
 
+/* Userdata representing symbol resolver of the namespace. */
+#define LGI_GI_RESOLVER "lgi.gi.resolver"
+
+static int
+resolver_index (lua_State *L)
+{
+  gpointer address;
+  GITypelib **typelib = luaL_checkudata (L, 1, LGI_GI_RESOLVER);
+  if (g_typelib_symbol (*typelib, luaL_checkstring (L, 2), &address))
+    {
+      lua_pushlightuserdata (L, address);
+      return 1;
+    }
+
+  return 0;
+}
+
+static const luaL_Reg gi_resolver_reg[] = {
+  { "__index", resolver_index },
+  { NULL, NULL }
+};
+
 /* Userdata representing namespace in girepository. */
 #define LGI_GI_NAMESPACE "lgi.gi.namespace"
 
@@ -663,6 +671,14 @@ namespace_index (lua_State *L)
   else if (strcmp (prop, "name") == 0)
     {
       lua_pushstring (L, ns);
+      return 1;
+    }
+  else if (strcmp (prop, "resolve") == 0)
+    {
+      GITypelib **udata = lua_newuserdata (L, sizeof (GITypelib *));
+      luaL_getmetatable (L, LGI_GI_RESOLVER);
+      lua_setmetatable (L, -2);
+      *udata = g_irepository_require (NULL, ns, NULL, 0, NULL);
       return 1;
     }
   else
@@ -758,6 +774,7 @@ static const Reg gi_reg[] = {
   { LGI_GI_INFOS, gi_infos_reg },
   { LGI_GI_INFO, gi_info_reg },
   { LGI_GI_NAMESPACE, gi_namespace_reg },
+  { LGI_GI_RESOLVER, gi_resolver_reg },
   { NULL, NULL }
 };
 
