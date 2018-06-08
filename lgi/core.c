@@ -536,6 +536,13 @@ core_module (lua_State *L)
     name = g_strdup_printf (MODULE_NAME_FORMAT_PLAIN,
 			    luaL_checkstring (L, 1));
 
+#if defined(__APPLE__)
+  char *path = g_module_build_path (GOBJECT_INTROSPECTION_LIBDIR,
+                                    name);
+  g_free(name);
+  name = path;
+#endif
+
   /* Try to load the module. */
   GModule *module = g_module_open (name, 0);
   if (module == NULL)
@@ -621,6 +628,17 @@ set_resident (lua_State *L)
     }
   else
     {
+      if (lua_gettop(L) == 3)
+	{
+	  /* Some Lua versions give us the path to the .so on the stack.
+	     Just load & leak it. */
+	  GModule* module = g_module_open(lua_tostring(L, 2),
+					  G_MODULE_BIND_LAZY |
+					  G_MODULE_BIND_LOCAL);
+	  if (module != NULL)
+	    return;
+	}
+
       /* This hack tries to enumerate the whole registry table and
 	 find 'LOADLIB: path' library.  When it detects itself, it
 	 just removes pointer to the loaded library, disallowing Lua
@@ -654,7 +672,7 @@ set_resident (lua_State *L)
     }
 }
 
-int
+G_MODULE_EXPORT int
 luaopen_lgi_corelgilua51 (lua_State* L)
 {
   LgiStateMutex *mutex;
