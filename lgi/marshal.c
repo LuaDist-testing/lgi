@@ -390,7 +390,13 @@ marshal_2lua_array (lua_State *L, GITypeInfo *ti, GIDirection dir,
   eti_guard = lua_gettop (L);
   esize = array_get_elt_size (eti);
 
-  if (esize == 1 && g_type_info_get_tag (eti) == GI_TYPE_TAG_UINT8)
+  /* Note that we ignore is_pointer check for uint8 type.  Although it
+     is not exactly correct, we probably would not handle uint8*
+     correctly anyway, this is strange type to use, and moreover this
+     is workaround for g-ir-scanner bug which might mark elements of
+     uint8 arrays as gconstpointer, thus setting is_pointer=true on
+     it.  See https://github.com/pavouk/lgi/issues/57 */
+  if (g_type_info_get_tag (eti) == GI_TYPE_TAG_UINT8)
     {
       /* UINT8 arrays are marshalled as 'bytes' instances. */
       if (len < 0)
@@ -913,8 +919,9 @@ lgi_marshal_2c (lua_State *L, GITypeInfo *ti, GIArgInfo *ai,
 		 checking also argument type - structs as C function
 		 arguments are always passed as pointers. */
 	      gboolean by_value =
-		(!g_type_info_is_pointer (ti) && ai == NULL) ||
-		parent == LGI_PARENT_CALLER_ALLOC;
+		parent != LGI_PARENT_FORCE_POINTER &&
+		((!g_type_info_is_pointer (ti) && ai == NULL) ||
+		 parent == LGI_PARENT_CALLER_ALLOC);
 
 	      lgi_type_get_repotype (L, G_TYPE_INVALID, info);
 	      lgi_record_2c (L, narg, target, by_value,
@@ -1186,7 +1193,8 @@ lgi_marshal_2lua (lua_State *L, GITypeInfo *ti, GIArgInfo *ai, GIDirection dir,
 	  case GI_INFO_TYPE_STRUCT:
 	  case GI_INFO_TYPE_UNION:
 	    lgi_type_get_repotype (L, G_TYPE_INVALID, info);
-	    lgi_record_2lua (L, g_type_info_is_pointer (ti)
+	    lgi_record_2lua (L, parent == LGI_PARENT_FORCE_POINTER ||
+			     g_type_info_is_pointer (ti)
 			     ? arg->v_pointer : source, own, parent);
 	    break;
 
